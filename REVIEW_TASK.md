@@ -2,7 +2,7 @@
 
 _Part of agentic-trader. MIT License._
 
-Runs once a week, Saturday morning Pacific, after the trading week has
+Runs once a week, Saturday evening Pacific, after the trading week has
 closed. It measures how the strategy actually performed: win rate,
 average return, and P&L by conviction tier, buy type, and exit reason;
 how often each rule fired; how order approvals went; and the result

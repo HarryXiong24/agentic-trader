@@ -80,7 +80,7 @@ copy its full text into a new scheduled task, replace every
 placeholder, and give the task the Robinhood connector, the Gmail
 connector (if used), and push access to their repo. Schedules (Pacific
 time; prefix with `CRON_TZ=America/Los_Angeles` or convert to UTC): Trade `52 8 * * 1-5`, Midday `22 12 * * 1-5`, Research
-`23 14 * * 0-5`, Weekly review `7 9 * * 6`, Manual check with no
+`23 14 * * 0-5`, Weekly review `0 20 * * 6`, Manual check with no
 schedule. Check that no `<...>`
 placeholder is left in any task.
 
@@ -267,7 +267,7 @@ the cash buffer holds. Had it opened at $42 — 5% above the thesis price,
 over the `entry_price_gap.max_pct` limit — the buy would be skipped that
 cycle.
 
-**Weekly review** (Saturday morning Pacific; spec `REVIEW_TASK.md`).
+**Weekly review** (Saturday evening Pacific; spec `REVIEW_TASK.md`).
 Report-only. Turns the week's fills into closed trades and reports win
 rate, average return, and P&L by conviction tier, buy type, and exit
 reason, how often each rule fired, how order approvals went (including
@@ -522,7 +522,7 @@ persistent state):
 | Trade | ~8:50am | `TRADE_TASK.md` | risk rules, sells, then buys |
 | Midday check | ~12:20pm | `MIDDAY_TASK.md` | stop-loss / take-profit only, never buys |
 | Research | ~2:25pm, also Sunday | `RESEARCH_TASK.md` | screening and theses, no orders |
-| Weekly review | ~9:07am Saturday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
+| Weekly review | ~8pm Saturday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
 | Manual check | any time, by hand | `MANUAL_TASK.md` | Trade run right now; analysis only when the market is closed |
 
 - **Recommended: Claude Code's own scheduled cloud tasks.** Create one
@@ -565,7 +565,7 @@ Robinhood app; with approval off, the runs submit nothing.
 Suggested schedules (cron in Pacific time, so prefix each with
 `CRON_TZ=America/Los_Angeles` if your scheduler supports it, or convert
 to UTC): Trade `52 8 * * 1-5`, Midday
-`22 12 * * 1-5`, Research `23 14 * * 0-5`, Weekly review `7 9 * * 6`,
+`22 12 * * 1-5`, Research `23 14 * * 0-5`, Weekly review `0 20 * * 6`,
 Manual check with no schedule.
 
 ### Usage rules
