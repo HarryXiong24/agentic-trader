@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+# Part of agentic-trader. MIT License -- see LICENSE
+"""Compute daily/weekly P&L % against the loss-limit base and the halt decision.
+
+Per risk_rules.json/TRADE_TASK.md spec: daily_pnl_pct and weekly_pnl_pct
+are always denominated against net_deposits_usd (computed fresh each cycle
+per TRADE_TASK.md's loss-limit check -- total_value minus all-time
+realized+unrealized P&L, i.e. net deposits), never against
+get_realized_pnl's own total_rate_of_return (which is denominated against
+capital in the closed trades, a different and smaller base).
+"""
+import argparse
+import json
+import sys
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--daily-realized-usd", type=float, required=True,
+                    help="get_realized_pnl span=day total_returns (0 if no trades today)")
+    p.add_argument("--weekly-realized-usd", type=float, required=True,
+                    help="get_realized_pnl span=week total_returns (0 if no trades this week)")
+    p.add_argument("--net-deposits-usd", type=float, required=True,
+                    help="computed this cycle per TRADE_TASK.md's loss-limit check -- "
+                         "total_value minus all-time realized+unrealized P&L")
+    p.add_argument("--daily-limit-pct", type=float, required=True,
+                    help="risk_rules.json loss_limits.daily_loss_limit_pct_of_account")
+    p.add_argument("--weekly-limit-pct", type=float, required=True,
+                    help="risk_rules.json loss_limits.weekly_loss_limit_pct_of_account")
+    args = p.parse_args()
+
+    if args.net_deposits_usd <= 0:
+        print(json.dumps({"error": "net_deposits_usd must be positive"}), file=sys.stderr)
+        sys.exit(1)
+
+    daily_pnl_pct = args.daily_realized_usd / args.net_deposits_usd
+    weekly_pnl_pct = args.weekly_realized_usd / args.net_deposits_usd
+
+    daily_breach = (-daily_pnl_pct) >= args.daily_limit_pct
+    weekly_breach = (-weekly_pnl_pct) >= args.weekly_limit_pct
+
+    reasons = []
+    if daily_breach:
+        reasons.append(f"daily drawdown {(-daily_pnl_pct):.4%} >= daily limit {args.daily_limit_pct:.4%}")
+    if weekly_breach:
+        reasons.append(f"weekly drawdown {(-weekly_pnl_pct):.4%} >= weekly limit {args.weekly_limit_pct:.4%}")
+
+    print(json.dumps({
+        "daily_pnl_pct": round(daily_pnl_pct, 6),
+        "weekly_pnl_pct": round(weekly_pnl_pct, 6),
+        "entries_halted": daily_breach or weekly_breach,
+        "halt_reason": "; ".join(reasons) if reasons else None,
+    }))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,172 @@
+{
+  "_comment": "These are hard numeric limits. Claude's reasoning/thesis step may NEVER override these values. Any proposed trade that violates a rule here must be rejected before it reaches review_equity_order, with no exceptions regardless of how strong the thesis sounds.",
+
+  "account_number": "PROVIDED_IN_RUN_PROMPT",
+  "account_number_note": "Intentionally not stored in this repo. The scheduled run prompt supplies the trading account number at runtime; use that value wherever a spec says account_number.",
+
+  "execution": {
+    "mode": "dry_run",
+    "note": "mode must be manually changed from 'dry_run' to 'live' by the human. Claude must never change this value itself, and must refuse to place live orders while mode is 'dry_run'.",
+    "dry_run_min_cycles_before_live": 5
+  },
+
+  "universe": {
+    "watchlist_name": "Agent",
+    "watchlist_max_candidates": 40,
+    "supplementary_scan_id": "YOUR_SCAN_ID_HERE",
+    "supplementary_scan_max_candidates": 5,
+    "supplementary_scan_note": "Robinhood scan -- define whatever screening conditions you like (relative volume, market cap, RSI, etc.) via the Robinhood MCP's create_scan tool, then paste its scan_id here. Additive to watchlist_max_candidates, not shared with it -- the watchlist's own slots are never crowded out by scan results.",
+
+    "min_avg_daily_volume": 1000000,
+    "min_market_cap_usd": 2000000000,
+    "max_market_cap_usd": 100000000000000,
+    "max_market_cap_note": "Effectively no upper limit (USD 100T) so the largest companies qualify.",
+
+    "penny_stock_filter_enabled": true,
+    "penny_stock_price_threshold_usd": 5.00,
+
+    "leveraged_etf_filter_enabled": true,
+    "inverse_etf_filter_enabled": true,
+
+    "trend_filter_enabled": true,
+    "trend_filter_lookback_trading_days": 200
+  },
+
+  "signal_thresholds": {
+    "_comment": "A Step-1 candidate qualifies for a Research-run news search + thesis (i.e. counts as a 'notable signal') if it meets ANY ONE of these three, computed from data already pulled in Steps 1-2 (no extra API calls). This is a mechanical gate, not a judgment call. Currently-held positions are exempt and always get a thesis regardless of these thresholds.",
+    "price_move_60d_pct": 0.10,
+    "volume_spike_multiple": 2.0,
+    "pct_from_52wk_extreme": 0.03
+  },
+
+  "cadence": {
+    "news_search_budget_per_cycle": 30
+  },
+
+  "position_sizing": {
+    "max_position_pct_of_account": 0.15,
+    "max_concurrent_positions": 6,
+    "min_cash_buffer_pct": 0.05,
+    "min_top_up_usd": 5.00,
+    "min_top_up_pct_of_target": 0.10,
+    "min_new_position_usd": 10.00,
+    "conviction_pct": {"high": 0.15, "medium": 0.10, "low": 0.075},
+    "note": "Sized for a small (~$200) account: up to 6 tactical positions, high 15%, medium 10%, low 7.5% of the account, so each position is large enough to matter and the core sleeve plus six positions fit with cash left for second tranches. A new position smaller than min_new_position_usd (after pullback or loss-limit multipliers) is skipped rather than bought as dust. The core sleeve (SPY/QQQ) is separate and does not count toward max_concurrent_positions. Revisit when the account reaches about $500 (e.g. 8 positions at 12/8/5%).",
+    "min_top_up_note":"A top-up only fires if the computed buy amount clears max($1.00 broker minimum, min_top_up_usd, min_top_up_pct_of_target x target_size for that candidate's conviction tier). Below that, skip without calling review_equity_order -- a top-up smaller than this doesn't move the position meaningfully, and letting headroom shrink toward zero every cycle otherwise generates a long tail of dust-sized orders as the position converges on target. Applies to top-ups only, never to new-entry sizing."
+  },
+
+  "stop_loss": {
+    "mode": "conviction_tiered_atr",
+    "tiers": {
+      "high":   {"atr_multiplier": 3.0, "min_pct": 0.08, "max_pct": 0.18},
+      "medium": {"atr_multiplier": 2.5, "min_pct": 0.06, "max_pct": 0.15},
+      "low":    {"atr_multiplier": 2.0, "min_pct": 0.05, "max_pct": 0.12}
+    },
+    "support_aware": true,
+    "hard_floor_pct": 0.20,
+    "note": "Computed by scripts/stop_loss.py. The tier is the conviction AT ENTRY (recorded in the paper ledger) and never changes; the stop is tier multiplier x ATR(14), clamped to the tier's range, placed just under support when that fits the range; it only ratchets up, never down; and no position may lose more than hard_floor_pct from its average cost. Every open position is checked every run, independent of any new thesis. A good new narrative never cancels a stop-loss."
+  },
+
+  "take_profit": {
+    "tiers": [
+      {"gain_pct": 0.15, "sell_fraction_of_position": 0.25},
+      {"gain_pct": 0.30, "sell_fraction_of_position": 0.25},
+      {"gain_pct": 0.50, "sell_fraction_of_position": 0.25}
+    ],
+    "note": "Tiered partial take-profit, not a single full-exit threshold. Every open position must have this checked on every cycle, independent of any new thesis about the stock — this account is short-term oriented, not buy-and-hold. A good new narrative does not cancel a take-profit tier any more than it cancels a stop-loss. Each tier fires once (per holding period, i.e. since the position last closed to zero) when gain first reaches it, selling sell_fraction_of_position of the position's quantity at that moment — see TRADE_TASK.md Step 5 for the exact mechanics. After all three tiers have fired, the remaining quantity is held long indefinitely; only the stop-loss still applies to it. See sell_reentry_lock for re-entry lock behavior."
+  },
+
+  "conviction_trim": {
+    "enabled": true,
+    "overweight_trigger_pct": 0.25,
+    "min_overweight_conviction_cycles": 3,
+    "note": "Trims a held position to its conviction-tier target once conviction has been 'low' or 'medium' (i.e. not 'high') for min_overweight_conviction_cycles consecutive cycles and the overage exceeds overweight_trigger_pct -- see scripts/conviction_trim.py. See sell_reentry_lock for re-entry lock behavior."
+  },
+
+  "sell_reentry_lock": {
+    "gain_close_max_trading_days": 10,
+    "note": "Applies to every sell reason: a loss-closed sell locks re-entry until price drops below the sale price; a gain-closed sell locks until price drops below the sale price or gain_close_max_trading_days trading days pass, whichever comes first. See scripts/entry_gate.py."
+  },
+
+  "loss_limits": {
+    "daily_loss_limit_pct_of_account": 0.05,
+    "weekly_loss_limit_pct_of_account": 0.10,
+    "soft_breach_size_multiplier": 0.5,
+    "soft_breach_trading_days": 3,
+    "severe_daily_loss_pct": 0.08,
+    "severe_weekly_loss_pct": 0.15,
+    "note": "A normal breach does not pause buying: new positions and top-ups are sized at soft_breach_size_multiplier for soft_breach_trading_days trading days (counting the breach day). Only a severe breach pauses new entries, top-ups, and core buys for that day. Loss limits never force a sell."
+  },
+
+  "core_sleeve": {
+    "enabled": true,
+    "target_pct_of_account": 0.25,
+    "rebalance_band_pct": 0.05,
+    "candidates_in_order": ["QQQ", "SPY"],
+    "note": "Holds target_pct_of_account in the first candidate whose price is above both its 50- and 200-day averages; if neither qualifies, holds no core position (cash). Rebalances only when the core value drifts more than rebalance_band_pct of total value from target. SPY and QQQ are traded ONLY through the core sleeve, never as tactical positions. A core position exits when its ETF closes below its 200-day average, or at the hard floor."
+  },
+
+  "pullback_mode": {
+    "enabled": true,
+    "whitelist": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "TSM", "ASML", "SMH"],
+    "min_pct_below_52wk_high": 0.10,
+    "require_stabilizing": true,
+    "first_tranche_size_multiplier": 0.5,
+    "second_tranche": {
+      "requires_close_above_sma20": true,
+      "requires_price_above_entry": true,
+      "max_trading_days_after_entry": 10
+    },
+    "note": "Whitelisted names may be bought below their 200-day average when at least min_pct_below_52wk_high below the 52-week high, scripts/technicals.py reports stabilizing=true (at least 2 of 4 stabilization signals and no falling-knife flag), and there is no thesis-breaking company news. Entry is staged: half size first, the other half as a top-up once the rebound is confirmed within the window. The entry_extension gate does not apply to pullback entries; entry_price_gap and earnings_blackout still do."
+  },
+
+  "defensive": {
+    "symbols": ["KO", "PEP", "PFE", "MRK", "UNH", "MDT", "BMY", "NEE", "JNJ", "WMT", "COST"],
+    "max_positions": 1,
+    "only_when_risk_off": true,
+    "risk_off_rule": "SPY price below its 50-day average",
+    "note": "In a small growth account, defensive names are a parking place, not a core holding: at most one defensive position, and only bought while the broad market is risk-off. Existing defensive positions are still managed normally when the regime turns."
+  },
+
+  "etf_tactical": {
+    "note": "ETFs other than the core sleeve (currently SMH) are ranked by the Research run's etf_conviction (ETF rubric in RESEARCH_TASK.md), not the company-catalyst conviction."
+  },
+
+  "wash_sale_avoidance": {
+    "enabled": true,
+    "note": "Toggle only -- set enabled to false to turn this guard off entirely; no other change needed. IRS wash-sale rule applies per taxpayer across ALL accounts, not per account, so this checks linked_accounts, not just account_number. Blocks BUYS only (new entries and top-ups) -- never blocks a stop_loss/take_profit/exit_existing sell, since risk management must never bend to a tax outcome; those sells are instead logged with a wash-sale flag if one applies, for the human's own tax tracking. This cannot prevent a wash sale caused by a purchase made LATER in another linked account after an agentic-account sell -- those accounts are outside this pipeline's control; only the human can avoid that side.",
+    "lookback_window_days": 30,
+    "linked_accounts": "PROVIDED_IN_RUN_PROMPT",
+    "linked_accounts_note": "Intentionally not stored in this repo; the run prompt supplies it. The MCP account is treated as a standalone account: linked_accounts contains only the trading account itself, so holdings and activity in any other account are never read or considered."
+  },
+
+  "stop_alerts": {
+    "enabled": true,
+    "include_paper_positions": false,
+    "note": "Keeps one Robinhood price_below alert at each held position's stop price (see TRADE_TASK.md Step 5 and MIDDAY_TASK.md), so a sharp intraday drop notifies the human in real time instead of waiting for the next run. Real positions always get alerts; set include_paper_positions to true to also get alerts for dry-run paper positions. The agent only ever touches alert IDs it recorded in agent_alerts.json, and never deletes alerts."
+  },
+
+  "entry_price_gap": {
+    "max_pct": 0.03,
+    "note": "Hard ceiling on buys -- a gap this large skips the buy this cycle even if the thesis still reads fine, same principle as a stop-loss. Never applies to sells. Checked in the Trade run's Step 4 (price-based staleness check), before Step 5's risk enforcement -- not part of the execution.mode live-order gate."
+  },
+
+  "entry_extension": {
+    "enabled": true,
+    "lookback_trading_days": 20,
+    "max_extension_pct": 0.10,
+    "note": "Hard ceiling on buys -- skips the buy this cycle if current_price is more than max_extension_pct above its own lookback_trading_days-day moving average, same principle as entry_price_gap. Never applies to sells."
+  },
+
+  "earnings_blackout": {
+    "enabled": true,
+    "blackout_trading_days": 5,
+    "note": "Skips new entries and top-ups when the symbol's next earnings report is within blackout_trading_days trading days (0 = today), so fresh money isn't put on a binary event. Never applies to sells."
+  },
+
+  "early_exit_guard": {
+    "enabled": true,
+    "window_trading_days": 5,
+    "note": "Within window_trading_days of a holding period's opening buy, an exit_existing sell requires a new_fact_date after the entry thesis's date -- a thesis can't reverse on facts it already had. Never blocks stop_loss/take_profit/conviction_trim."
+  }
+}
