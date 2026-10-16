@@ -67,20 +67,21 @@ before they ever go live.
 **5. Verify locally**, from the repo root:
 ```
 python3 -c "import json; json.load(open('risk_rules.json')); print('risk_rules.json OK')"
-echo '[{"symbol":"AAA","group":"new","conviction":"high"}]' | python3 scripts/position_sizing.py --total-value 200 --cash-start 200 --concurrent-positions-start 0 --max-position-pct 0.15 --max-concurrent-positions 6 --min-cash-buffer-pct 0.05 --min-top-up-usd 5 --min-top-up-pct-of-target 0.10 --conviction-pct "high:0.15,medium:0.10,low:0.075" --min-new-position-usd 10
+echo '[{"symbol":"AAA","group":"new","conviction":"high"}]' | python3 scripts/position_sizing.py --total-value 500 --cash-start 500 --concurrent-positions-start 0 --max-position-pct 0.12 --max-concurrent-positions 8 --min-cash-buffer-pct 0.05 --min-top-up-usd 5 --min-top-up-pct-of-target 0.10 --conviction-pct "high:0.12,medium:0.08,low:0.05" --min-new-position-usd 10
 grep -rnE '<ACCOUNT_NUMBER_PATTERN>' --exclude-dir=.git . || echo "no account numbers in repo"
 ```
 The second command should print JSON with `"passed": true` and
-`"dollar_amount": 30.0`. In the third, substitute the real account
+`"dollar_amount": 60.0`. In the third, substitute the real account
 numbers for the placeholder only on the command line, never in a file. Every script needs only Python 3's standard
 library. Commit and push the `risk_rules.json` changes.
 
-**6. Create the four scheduled tasks.** For each file in `prompts/`,
+**6. Create the five scheduled tasks.** For each file in `prompts/`,
 copy its full text into a new scheduled task, replace every
 placeholder, and give the task the Robinhood connector, the Gmail
 connector (if used), and push access to their repo. Schedules (Pacific
 time): Trade `52 8 * * 1-5`, Midday `22 12 * * 1-5`, Research
-`23 14 * * 0-5`, Manual check with no schedule. Check that no `<...>`
+`23 14 * * 0-5`, Weekly review `7 9 * * 6`, Manual check with no
+schedule. Check that no `<...>`
 placeholder is left in any task.
 
 **7. First run.** Start the Research task once by hand. It should push
@@ -238,10 +239,19 @@ candidates are bought:
 - **Rank** (`rank_candidates.py`). By conviction, then fewer `risk_flags`,
   then larger percent below the 52-week high.
 - **Size** (`position_sizing.py`). In ranked order, each candidate is
-  bought at its conviction-tier size (high 15%, medium 10%, low 7.5% of the
-  account, sized for a small account; new positions under $10 are skipped)
-  until 6 tactical positions or the `min_cash_buffer_pct` floor
-  is reached.
+  bought at its conviction-tier size (high 12%, medium 8%, low 5% of the
+  account; new positions under $10 are skipped) until 8 tactical
+  positions or the `min_cash_buffer_pct` floor is reached. While SPY is
+  below its 200-day average, new tactical sizes are halved
+  (`regime_sizing`; defensive names excepted).
+- **Earnings on held positions** (`earnings_risk.py`). Held positions
+  with a report within 5 trading days are flagged at the top of the
+  report; low-conviction ones are half sold on the last regular session
+  before the report, once per report.
+- **Sector concentration** (`concentration.py`). Every run reports each
+  sector's share of the account, counting the core sleeve's ETF toward
+  its sector, and flags any sector above 50%. Information only, never a
+  cap.
 
 Every decision is logged to `trade_log.jsonl`. Some cycles buy nothing.
 
@@ -251,10 +261,17 @@ over 60 days, so it meets the price-move threshold and gets a news search;
 the model finds a confirmed earnings beat, no risk flags, and rates it
 `high` conviction, `long`. Next morning it opens at $40.60, within all
 buy-gate limits, and is the only `high`-conviction candidate, so it ranks
-first. `high` is 15% of the account: on $200 that is a $30 buy, placed if
+first. `high` is 12% of the account: on $500 that is a $60 buy, placed if
 the cash buffer holds. Had it opened at $42 — 5% above the thesis price,
 over the `entry_price_gap.max_pct` limit — the buy would be skipped that
 cycle.
+
+**Weekly review** (Saturday morning Pacific; spec `REVIEW_TASK.md`).
+Report-only. Turns the week's fills into closed trades and reports win
+rate, average return, and P&L by conviction tier, buy type, and exit
+reason, how often each rule fired, how order approvals went (including
+any declined risk sells), and the result against SPY and QQQ. It never
+trades or changes a rule; it gives you evidence before you tune one.
 
 **Midday risk check** (weekdays around 12:20pm Pacific; spec
 `MIDDAY_TASK.md`). Re-checks held positions against the stop-loss and
@@ -290,7 +307,7 @@ account and treats it as a standalone account: it never reads or
 considers holdings or activity in any other account, and no account
 number is ever stored in this repo.
 
-All four runs are designed as cloud-hosted agent sessions,
+All five runs are designed as cloud-hosted agent sessions,
 independent of any local machine — each run clones this repo fresh and
 commits/pushes its results back to `main`, so the repo itself is the
 persistent state, not local disk. (Running locally instead works too,
@@ -301,8 +318,8 @@ scheduled time.)
 
 - `AGENTS.md` — short instructions for AI agents (setup, scheduled
   runs, changes); `CLAUDE.md` points Claude sessions to it.
-- `prompts/` — the four scheduled-task prompts (`research.md`,
-  `trade.md`, `midday.md`, `manual.md`) with placeholders for your
+- `prompts/` — the five scheduled-task prompts (`research.md`,
+  `trade.md`, `midday.md`, `manual.md`, `review.md`) with placeholders for your
   account number, email, and repo. See "Run prompts" below.
 - `risk_rules.json` — the hard, mechanical limits (position sizing, stop-
   loss, loss limits, universe filters, execution mode, wash-sale guard).
@@ -332,6 +349,12 @@ scheduled time.)
     below-high-conviction, overweight cycles.
   - `rank_candidates.py` — the ranking above (conviction, `risk_flags`,
     `pct_below_52wk_high`); new entries and top-ups compete on one list.
+  - `earnings_risk.py` — the pre-earnings flag and low-conviction trim
+    for held positions.
+  - `concentration.py` — each sector's share of the account and the
+    over-threshold flag (report-only).
+  - `performance_review.py` — the weekly review's closed-trade stats,
+    rule-fire counts, and approval outcomes (report-only).
   - `position_sizing.py` — the sizing above, plus concurrency and
     cash-buffer checks, compounding running totals down the ranked list.
 
@@ -344,7 +367,7 @@ scheduled time.)
 - `scripts/paper_portfolio.py` — the dry-run paper ledger and the
   SPY/QQQ benchmark (`paper_portfolio.json`, `benchmark.json`).
 - `RESEARCH_TASK.md` / `TRADE_TASK.md` / `MIDDAY_TASK.md` /
-  `MANUAL_TASK.md` — the spec each run follows. The manual check reuses
+  `MANUAL_TASK.md` / `REVIEW_TASK.md` — the spec each run follows. The manual check reuses
   the Trade run's steps and lists only its differences.
 - `reports/<date>.md` — the bilingual (English/Chinese) daily record;
   every run that day appends its own section.
@@ -414,8 +437,8 @@ in Example output.
 2. **Open and fund the agentic account.** Robinhood's
    [Agentic Trading](https://robinhood.com/us/en/agentic-trading/)
    uses a separate, dedicated account, restricted to the funds you put
-   in it. The defaults are sized for a small account (around $200);
-   see Configuration to scale them.
+   in it. The defaults are sized for roughly $500 to $1,500; see
+   Configuration to scale them.
 3. **Connect Claude.** Add Robinhood's MCP server as a connector (every
    tool call in the specs goes through it), and optionally Gmail for the
    report emails.
@@ -430,7 +453,7 @@ in Example output.
    `wash_sale_avoidance.linked_accounts`: the real account number lives
    only in the scheduled-task prompts, never in this repo. Read every
    threshold (see Configuration) and commit any changes.
-6. **Create the four scheduled tasks** from `prompts/`, filling in the
+6. **Create the five scheduled tasks** from `prompts/`, filling in the
    placeholders, on the schedules in "Running it" below.
 7. **Start in dry run.** A fresh copy ships with `execution.mode` set to
    `"dry_run"`. Run the Research task once by hand, then let the Trade
@@ -455,8 +478,9 @@ explaining it. The main settings and their defaults:
 | `universe.supplementary_scan_id` | `"YOUR_SCAN_ID_HERE"` | optional saved scan for extra movers (skipped until set) |
 | `universe.min_avg_daily_volume` / `min_market_cap_usd` | 1M shares / $2B | liquidity and size floor |
 | `signal_thresholds` | 10% / 2× / 3% | 60-day move, volume spike, distance from 52-week extreme that earn a news search |
-| `position_sizing.conviction_pct` | 15% / 10% / 7.5% | position size for high / medium / low conviction |
-| `position_sizing.max_concurrent_positions` | `6` | tactical positions (the core sleeve doesn't count) |
+| `position_sizing.conviction_pct` | 12% / 8% / 5% | position size for high / medium / low conviction |
+| `position_sizing.max_position_pct_of_account` | 12% | largest any single position may be |
+| `position_sizing.max_concurrent_positions` | `8` | tactical positions (the core sleeve doesn't count) |
 | `position_sizing.min_cash_buffer_pct` | 5% | cash always left uninvested |
 | `position_sizing.min_new_position_usd` | $10 | smaller new positions are skipped |
 | `stop_loss.tiers` / `hard_floor_pct` | 3.0 / 2.5 / 2.0 × ATR, 20% | conviction-tiered stops and the maximum loss on any position |
@@ -466,17 +490,20 @@ explaining it. The main settings and their defaults:
 | `pullback_mode.whitelist` | Mag 7, TSM, ASML, SMH | names that may be bought on a 10%+ pullback below the 200-day average |
 | `defensive.max_positions` | `1` | defensive names, only while SPY is below its 50-day average |
 | `entry_price_gap` / `entry_extension` / `earnings_blackout` | 3% / 10% / 5 days | buy-gate limits |
+| `regime_sizing` | ×0.5 below SPY's 200-day | new tactical sizes while the market is in a downtrend |
+| `earnings_hold` | 5 days, sell 50% of low | pre-earnings flag window and trim for held positions |
+| `concentration_report.flag_sector_pct` | 50% | sector share that gets flagged in the report (never a cap) |
 | `cadence.news_search_budget_per_cycle` | `30` | news searches per Research run |
 
-The sizing is tuned for a small account (around $200). For a larger
-account, consider more positions at smaller percentages (for example 8
-positions at 12% / 8% / 5% around $500). Loosening a risk limit is the
+The sizing is tuned for roughly $500 to $1,500. Under about $500, 6
+positions at 15% / 10% / 7.5% keep each position large enough to matter;
+above about $1,500, consider 10 positions at 10% / 7% / 4%. Loosening a risk limit is the
 riskiest change you can make; do it deliberately and in dry run first.
 
 ## Running it
 
-Three schedules fire on weekdays and the Research run also runs on Sunday,
-plus one manual check with no schedule. Each is a fresh cloud session that clones this repo, follows
+Three schedules fire on weekdays, the Research run also runs on Sunday,
+the weekly review runs on Saturday, and the manual check has no schedule. Each is a fresh cloud session that clones this repo, follows
 its spec, and pushes results back to `main` (the repo itself is the
 persistent state):
 
@@ -485,10 +512,11 @@ persistent state):
 | Trade | ~8:50am | `TRADE_TASK.md` | risk rules, sells, then buys |
 | Midday check | ~12:20pm | `MIDDAY_TASK.md` | stop-loss / take-profit only, never buys |
 | Research | ~2:25pm, also Sunday | `RESEARCH_TASK.md` | screening and theses, no orders |
+| Weekly review | ~9:07am Saturday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
 | Manual check | any time, by hand | `MANUAL_TASK.md` | Trade run right now; analysis only when the market is closed |
 
 - **Recommended: Claude Code's own scheduled cloud tasks.** Create one
-  task per run above: three on their weekday schedules, and the manual
+  task per run above: four on their schedules, and the manual
   check with no schedule, so it only runs when you start it. Point each
   at **your copy** from Setup, not this repo. This runs independent of
   any machine being on — the actual point of "fully automated."
@@ -504,8 +532,8 @@ persistent state):
 
 ### Run prompts
 
-Ready-made prompts for the four scheduled tasks are in `prompts/`
-(`research.md`, `trade.md`, `midday.md`, `manual.md`). Copy each one
+Ready-made prompts for the five scheduled tasks are in `prompts/`
+(`research.md`, `trade.md`, `midday.md`, `manual.md`, `review.md`). Copy each one
 into its scheduled task and fill in the placeholders there — never in
 this repo, because the filled-in prompts carry your account number:
 
@@ -525,7 +553,8 @@ approval is on, so every order still waits for you to approve it in the
 Robinhood app; with approval off, the runs submit nothing.
 
 Suggested schedules (cron, Pacific time): Trade `52 8 * * 1-5`, Midday
-`22 12 * * 1-5`, Research `23 14 * * 0-5`, Manual check with no schedule.
+`22 12 * * 1-5`, Research `23 14 * * 0-5`, Weekly review `7 9 * * 6`,
+Manual check with no schedule.
 
 ### Usage rules
 

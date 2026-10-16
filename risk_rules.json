@@ -44,14 +44,14 @@
   },
 
   "position_sizing": {
-    "max_position_pct_of_account": 0.15,
-    "max_concurrent_positions": 6,
+    "max_position_pct_of_account": 0.12,
+    "max_concurrent_positions": 8,
     "min_cash_buffer_pct": 0.05,
     "min_top_up_usd": 5.00,
     "min_top_up_pct_of_target": 0.10,
     "min_new_position_usd": 10.00,
-    "conviction_pct": {"high": 0.15, "medium": 0.10, "low": 0.075},
-    "note": "Sized for a small (~$200) account: up to 6 tactical positions, high 15%, medium 10%, low 7.5% of the account, so each position is large enough to matter and the core sleeve plus six positions fit with cash left for second tranches. A new position smaller than min_new_position_usd (after pullback or loss-limit multipliers) is skipped rather than bought as dust. The core sleeve (SPY/QQQ) is separate and does not count toward max_concurrent_positions. Revisit when the account reaches about $500 (e.g. 8 positions at 12/8/5%).",
+    "conviction_pct": {"high": 0.12, "medium": 0.08, "low": 0.05},
+    "note": "Sized for an account of roughly $500 to $1,500: up to 8 tactical positions, high 12%, medium 8%, low 5% of the account, so single-stock risk stays moderate and cash is left for second tranches. For a small account (under about $500), 6 positions at 15/10/7.5% keeps each position large enough to matter. A new position smaller than min_new_position_usd (after pullback, loss-limit, or regime multipliers) is skipped rather than bought as dust. The core sleeve (SPY/QQQ) is separate and does not count toward max_concurrent_positions. Positions bought under earlier, larger sizes are never force-sold to the new size; conviction_trim trims one that stays overweight once its conviction is no longer high. Revisit when the account passes about $1,500 (e.g. 10 positions at 10/7/4%).",
     "min_top_up_note":"A top-up only fires if the computed buy amount clears max($1.00 broker minimum, min_top_up_usd, min_top_up_pct_of_target x target_size for that candidate's conviction tier). Below that, skip without calling review_equity_order -- a top-up smaller than this doesn't move the position meaningfully, and letting headroom shrink toward zero every cycle otherwise generates a long tail of dust-sized orders as the position converges on target. Applies to top-ups only, never to new-entry sizing."
   },
 
@@ -126,6 +126,32 @@
     "only_when_risk_off": true,
     "risk_off_rule": "SPY price below its 50-day average",
     "note": "In a small growth account, defensive names are a parking place, not a core holding: at most one defensive position, and only bought while the broad market is risk-off. Existing defensive positions are still managed normally when the regime turns."
+  },
+
+  "regime_sizing": {
+    "enabled": true,
+    "rule": "SPY price below its 200-day average",
+    "new_entry_size_multiplier": 0.5,
+    "note": "While SPY is below its 200-day average, new tactical entries and top-ups are sized at new_entry_size_multiplier (multiplied with any pullback or loss-limit multiplier). It does not apply to the core sleeve (which already exits below the 200-day average) or to the defensive slot, and never forces a sell."
+  },
+
+  "concentration_report": {
+    "enabled": true,
+    "flag_sector_pct": 0.50,
+    "sector_groups": {
+      "Technology": ["Electronic Technology", "Technology Services"]
+    },
+    "etf_sectors": {"QQQ": "Technology", "SMH": "Technology", "SPY": "Broad market"},
+    "note": "Information only, never a cap: every Trade and manual run reports each sector's share of the account (scripts/concentration.py) and flags any sector above flag_sector_pct at the top of the report. sector_groups merges Robinhood's fine-grained sector names; etf_sectors labels ETFs, so the core sleeve counts toward the sector it is concentrated in."
+  },
+
+  "earnings_hold": {
+    "enabled": true,
+    "flag_window_trading_days": 5,
+    "trim_enabled": true,
+    "trim_convictions": ["low"],
+    "trim_fraction_of_position": 0.5,
+    "note": "For positions already held (new buys are covered by earnings_blackout): every Trade and manual run flags held positions whose next earnings report is within flag_window_trading_days, and on the last regular session before the report sells trim_fraction_of_position of positions whose entry conviction is in trim_convictions, once per report (scripts/earnings_risk.py). Core-sleeve positions are skipped. The trim goes through the normal sell procedure and app approval."
   },
 
   "etf_tactical": {

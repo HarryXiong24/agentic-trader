@@ -22,7 +22,7 @@ All numbers live in `risk_rules.json`.
 
 1. **Core sleeve.** About 25% of the account sits in QQQ (or SPY, or
    cash) depending on which is in an uptrend (Step 3, Step 7).
-2. **Up to 6 tactical positions**, sized by conviction (15% / 10% / 7.5%) for a small account; new positions under $10 are skipped.
+2. **Up to 8 tactical positions**, sized by conviction (12% / 8% / 5%); new positions under $10 are skipped. While SPY is below its 200-day average, new tactical sizes are halved (`regime_sizing`).
 3. **Quality pullbacks.** Mag 7 names, TSM, ASML, and SMH may be bought below their
    200-day average once they are well off the high and technically
    stabilizing, in two tranches (Step 4).
@@ -35,6 +35,12 @@ All numbers live in `risk_rules.json`.
    days; only a severe breach pauses buying (Step 7).
 7. **ETFs are judged as ETFs** (`etf_conviction`), and **defensive
    names are capped** at one position, bought only when risk-off.
+8. **Earnings on held positions** are flagged when a report is near,
+   and low-conviction positions are half sold on the last session
+   before the report (`earnings_hold`, Step 5).
+9. **Sector concentration** is reported every run and flagged above
+   50% of the account. It is information only, never a cap
+   (`concentration_report`, Step 9).
 
 ## Step 0 — Load state (do this first, every run)
 
@@ -124,8 +130,8 @@ real account as written.
 - top-up: the same, but omit `--conviction` and `--mode`.
 - sell: `python3 scripts/paper_portfolio.py sell --symbol <SYM>
   --quantity <quantity> --price <quote_bid> --reason <stop_loss|
-  take_profit|conviction_trim|exit_existing|core_exit|core_rotation|
-  core_rebalance> --date <today>`
+  take_profit|conviction_trim|earnings_trim|exit_existing|core_exit|
+  core_rotation|core_rebalance> --date <today>`
 Add the script's `realized_pnl_usd` (sells) and `cash_after` to that
 `order` log line. Paper sells skip `review_equity_order` (the real
 account holds no shares, so a review would always fail); log
@@ -152,11 +158,14 @@ falls back to the hard floor (log why).
 
 Run technicals on SPY and QQQ.
 - **Risk-off** = SPY's `above_sma50` is false.
+- **Below-200 regime** = SPY's `above_sma200` is false. While it holds
+  and `regime_sizing.enabled` is true, new tactical entries and top-ups
+  are sized at `regime_sizing.new_entry_size_multiplier` (Step 7).
 - **Core target** = the first symbol in `core_sleeve.candidates_in_order`
   whose `above_sma50` and `above_sma200` are both true; if none, there is
   no core target (the core sleeve holds cash).
 
-Log `"stage": "regime", "risk_off": <bool>, "core_target": "<symbol or null>"`
+Log `"stage": "regime", "risk_off": <bool>, "spy_below_sma200": <bool>, "core_target": "<symbol or null>"`
 with the SPY and QQQ technicals that decided it. The core sleeve itself
 is traded in Step 7, after sells and the loss-limit check.
 
@@ -402,10 +411,44 @@ by a loss-limit halt, same as stop-loss/take-profit. Log `"stage":
 Applies only to **held** positions — never a **new**-group candidate,
 which has no existing position to be overweight in.
 
+### Pre-earnings check (held positions only)
+
+Skip entirely if `earnings_hold.enabled` is `false`. Otherwise, for
+every held position that is not a core-sleeve position, call
+`get_earnings_results` for the symbol and take the next unreported
+report: its `report.date`, its timing (`am` or `pm`, null if unknown),
+and the trading days from today to that date (0 if today; null if no
+upcoming report is known). Set `already_trimmed` to true if
+`trade_log.jsonl` already has an `earnings_check` line for this symbol
+and `report_date` with `"action": "sell_partial_position"`. Pass every
+held position as a JSON array on stdin:
+
+`python3 scripts/earnings_risk.py --flag-window-trading-days <earnings_hold.flag_window_trading_days> --trim-convictions <earnings_hold.trim_convictions, comma-joined> --trim-fraction <earnings_hold.trim_fraction_of_position> [--trim-enabled]`
+
+with objects shaped `{"symbol", "entry_conviction" (the conviction at
+entry, recovered the same way as for the stop-loss check; "medium" if
+missing), "mode", "quantity",
+"trading_days_until_earnings", "report_date", "report_timing",
+"already_trimmed"}`. Pass `--trim-enabled` only when
+`earnings_hold.trim_enabled` is true. Use the script's JSON output
+directly. Skip any position a stop-loss already fully sells this cycle.
+
+- For every result with `"flagged": true`, log `"stage":
+  "earnings_check"` with the script's fields, and list it near the top
+  of the recap as an earnings flag (symbol, report date and timing,
+  conviction at entry, and the action).
+- For `"action": "sell_partial_position"`, sell `sell_quantity` (round
+  to a quantity the broker accepts) in Step 6's sell-execution pass,
+  never blocked by a loss-limit halt, the same as a take-profit tier,
+  with `--reason earnings_trim`.
+- If the script fails to run, log the failure, sell nothing for this
+  check, and flag every held position with a known report inside the
+  window for manual review. It does not halt entries.
+
 ## Step 6 — Sell-side execution
 
 **Execute sells now — every stop-loss trigger, fired take-profit tier,
-conviction-trim trigger, and Step 4's `exit_existing` candidates:** run
+conviction-trim trigger, pre-earnings trim, and Step 4's `exit_existing` candidates:** run
 this procedure for each, before touching anything buy-side below — a
 sell must actually clear before its freed cash/slot can be counted
 toward a same-cycle buy, and before today's realized P&L (loss-limit
@@ -546,8 +589,8 @@ cycle. Skip the news search and buy gate below for every
 still run out mid-ranking via ordinary per-candidate concurrency check).
 
 **No same-cycle sell-then-buy**: if a symbol's stop-loss fired, any
-take-profit tier fired, or a conviction-trim fired earlier this cycle
-(Step 5), it is not eligible for a top-up this same cycle, regardless
+take-profit tier fired, a conviction-trim fired, or a pre-earnings trim
+fired earlier this cycle (Step 5), it is not eligible for a top-up this same cycle, regardless
 of thesis or conviction — drop it from the **held** group before
 continuing, logging
 `"stage": "risk_check", "passed": false, "position_action": "top_up", "reason": "stop-loss/take-profit fired this cycle — not eligible for a same-cycle top-up"`.
@@ -795,7 +838,10 @@ this — gather the inputs below and let the scripts decide.**
 
 **Gather, for every candidate in the merged list:** `symbol`,
 `conviction` (the effective conviction from Step 4), `size_multiplier`
-(pullback first tranches only), `risk_flags` (omit the key entirely if the thesis
+(the product of the pullback first-tranche multiplier, if any, and,
+while Step 3's below-200 regime holds, `regime_sizing.new_entry_size_multiplier`
+for every candidate except defensive names; omit it when the product
+is 1), `risk_flags` (omit the key entirely if the thesis
 disclosed none — an omitted key and an empty array mean different
 things to the ranking script below), `pct_below_52wk_high` (omit if
 not available), `group` (`"new"` or `"held"`), and — for **held**
@@ -880,7 +926,7 @@ entry.
 ## Step 9 — Logging
 
 Append every decision to `trade_log.jsonl` — one JSON line each:
-`stop_loss`, `take_profit`, `conviction_trim`, `loss_limit_check`, `news_alert`, `risk_check` (pass/fail,
+`stop_loss`, `take_profit`, `conviction_trim`, `earnings_check`, `loss_limit_check`, `news_alert`, `concentration`, `risk_check` (pass/fail,
 including Step 7's news-check rejections, buy-gate rejections
 (price-gap, extension, wash-sale, sell re-entry lock), and top-up
 evaluations), and `order` stages, matching the shape already in
@@ -911,8 +957,8 @@ check result (none, soft breach with the size multiplier, or severe),
 including this cycle's computed `net_deposits_usd`;
 each held position's stop-loss/take-profit status (symbol, mode, stop
 price and basis, gain/drawdown, and whether it triggered, fired a tier,
-sold, or is just holding); any `news_alert` on a held position, near
-the top; each new-entry/top-up candidate considered, its mode, its news
+sold, or is just holding); any `news_alert` on a held position, any
+earnings flag, and any flagged sector, near the top; each new-entry/top-up candidate considered, its mode, its news
 check result (clear, a note, or dropped and why), and its outcome in one
 line (approved and sized, or rejected and why); and any
 orders actually placed (symbol, buy/sell, dollar amount). This is a
@@ -939,6 +985,22 @@ the benchmark:
    `trade_log_recent.md`: portfolio value and return since the
    benchmark start date versus SPY and QQQ, and the difference in
    percentage points.
+
+### Concentration report (every run, after the benchmark)
+
+Skip if `concentration_report.enabled` is `false`. From the final
+`get_equity_positions` snapshot and fresh quotes, build one object per
+held position, `{"symbol", "value" (quantity × price), "sector"}`, with
+`sector` from `get_equity_fundamentals` (omit for ETFs; they are labeled
+from the rules). Pipe the array into:
+
+`python3 scripts/concentration.py --total-value <final get_portfolio total_value> --flag-pct <concentration_report.flag_sector_pct> --sector-groups '<concentration_report.sector_groups as JSON>' --etf-sectors '<concentration_report.etf_sectors as JSON>'`
+
+Append its output to `trade_log.jsonl` as `"stage": "concentration"`, and
+add a short **Concentration** section to `trade_log_recent.md` listing
+each sector's share of the account. If a sector is flagged, say so near
+the top of the recap, the email, and the notification. This is
+information only: it never blocks a buy or forces a sell.
 
 ### Bilingual records
 
