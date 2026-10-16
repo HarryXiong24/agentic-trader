@@ -272,6 +272,12 @@ rate, average return, and P&L by conviction tier, buy type, and exit
 reason, how often each rule fired, how order approvals went (including
 any declined risk sells), and the result against SPY and QQQ. It never
 trades or changes a rule; it gives you evidence before you tune one.
+Its one automatic output is the **performance guard**
+(`performance_guard.json`): a buy type or conviction tier that is
+clearly failing (10+ closed trades in 60 days, win rate under 35%, and
+average return below zero) gets half size on new positions in the
+following week's runs, until it recovers. The guard can only reduce
+size, never raise it.
 
 **Midday risk check** (weekdays around 12:20pm Pacific; spec
 `MIDDAY_TASK.md`). Re-checks held positions against the stop-loss and
@@ -374,6 +380,8 @@ scheduled time.)
 - `CLAUDE.md` — standing notes for Claude sessions in this repo (commit
   identity).
 - `agent_alerts.json` — the stop-level alert IDs the agent manages.
+- `performance_guard.json` — the weekly review's tighten-only sizing
+  guard (empty until enough trades have closed).
 - `trade_log_template.jsonl` — the log line shapes; real logs accumulate
   in `trade_log.jsonl` in this same style.
 - `pending_proposals.jsonl` — the latest Research run's theses,
@@ -493,6 +501,7 @@ explaining it. The main settings and their defaults:
 | `regime_sizing` | ×0.5 below SPY's 200-day | new tactical sizes while the market is in a downtrend |
 | `earnings_hold` | 5 days, sell 50% of low | pre-earnings flag window and trim for held positions |
 | `concentration_report.flag_sector_pct` | 50% | sector share that gets flagged in the report (never a cap) |
+| `performance_guard` | 10 trades / 60 days, <35% wins and <0% avg → ×0.5 | tighten-only sizing for a buy type or tier the weekly review finds failing |
 | `cadence.news_search_budget_per_cycle` | `30` | news searches per Research run |
 
 The sizing is tuned for roughly $500 to $1,500. Under about $500, 6

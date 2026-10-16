@@ -41,10 +41,15 @@ All numbers live in `risk_rules.json`.
 9. **Sector concentration** is reported every run and flagged above
    50% of the account. It is information only, never a cap
    (`concentration_report`, Step 9).
+10. **Performance guard.** A buy type or conviction tier that the weekly
+   review finds clearly failing (10+ closed trades in 60 days, win rate
+   under 35%, average return below zero) gets half size on new positions
+   until it recovers. It can only reduce size (`performance_guard`, Step 7).
 
 ## Step 0 — Load state (do this first, every run)
 
-1. Read `risk_rules.json` **fresh** — never cache across runs. Its
+1. Read `risk_rules.json` **fresh** — never cache across runs. Also read
+   `performance_guard.json` (written by the weekly review; see Step 7). Its
    `account_number` and `wash_sale_avoidance.linked_accounts` are
    intentionally `"PROVIDED_IN_RUN_PROMPT"`: take both values from the
    run prompt instead, and never write them back to any file.
@@ -840,8 +845,8 @@ this — gather the inputs below and let the scripts decide.**
 `conviction` (the effective conviction from Step 4), `size_multiplier`
 (the product of the pullback first-tranche multiplier, if any, and,
 while Step 3's below-200 regime holds, `regime_sizing.new_entry_size_multiplier`
-for every candidate except defensive names; omit it when the product
-is 1), `risk_flags` (omit the key entirely if the thesis
+for every candidate except defensive names, and the performance guard
+multiplier below; omit it when the product is 1), `risk_flags` (omit the key entirely if the thesis
 disclosed none — an omitted key and an empty array mean different
 things to the ranking script below), `pct_below_52wk_high` (omit if
 not available), `group` (`"new"` or `"held"`), and — for **held**
@@ -851,6 +856,18 @@ re-pulled `get_equity_positions` above × fresh price from
 from `get_portfolio` above (`cash` is the starting `cash_remaining`),
 and `concurrent_positions_start` (open tactical positions, as in the
 `open_slots` computation above — core positions never count).
+
+**Performance guard.** If `performance_guard.enabled` is true and
+`performance_guard.json` has an `as_of` date no more than
+`performance_guard.max_age_days` days old, a candidate whose Step 4 mode
+(`trend`, `pullback`, `etf`, or `defensive`) matches a guarded
+`entry_mode`, or whose effective conviction matches a guarded
+`entry_conviction`, gets its `size_multiplier` multiplied by that
+entry's `size_multiplier`, once, even if both match. Ignore any
+`size_multiplier` above 1 in the file. If the file is missing, empty, or
+too old, no guard applies. Record `"performance_guard_applied":
+"<dimension>:<value>"` on that candidate's `risk_check` line, and list
+any active guard in the recap.
 
 Rank the candidates, then size them — pipe the candidate list (a JSON
 array) through both scripts in sequence (directly chainable):
@@ -958,7 +975,8 @@ including this cycle's computed `net_deposits_usd`;
 each held position's stop-loss/take-profit status (symbol, mode, stop
 price and basis, gain/drawdown, and whether it triggered, fired a tier,
 sold, or is just holding); any `news_alert` on a held position, any
-earnings flag, and any flagged sector, near the top; each new-entry/top-up candidate considered, its mode, its news
+earnings flag, any flagged sector, and any active performance guard,
+near the top; each new-entry/top-up candidate considered, its mode, its news
 check result (clear, a note, or dropped and why), and its outcome in one
 line (approved and sized, or rejected and why); and any
 orders actually placed (symbol, buy/sell, dollar amount). This is a

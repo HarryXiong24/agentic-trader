@@ -18,12 +18,21 @@ tagged "manual" so they don't skew the agent's stats. Without --fills (dry_run),
 from the log's dry-run order lines. --positions (optional) is a JSON
 array of {"symbol", "quantity", "average_cost", "current_price"} for
 unrealized P&L on what is still held.
+
+With --guard-out, it also computes the performance guard (a tighten-only
+rule from risk_rules.json performance_guard): over closed trades that
+exited within the lookback window, any buy type or entry-conviction tier
+with at least --guard-min-trades trades whose win rate is below
+--guard-max-win-rate AND whose average return is below
+--guard-max-avg-return gets --guard-size-multiplier on new positions.
+Manual, unknown, and core trades are never guarded. The result is written
+to the --guard-out file for the Trade run to read.
 """
 import argparse
 import json
 import sys
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 EPS = 1e-9
 
@@ -188,13 +197,52 @@ def approvals(log, since):
     return {k: dict(v) for k, v in sorted(stats.items())}
 
 
+def compute_guard(trades, today, lookback_days, min_trades, max_win_rate, max_avg_return, multiplier):
+    start = today - timedelta(days=lookback_days)
+    window = [t for t in trades if d(t["exit_date"]) >= start]
+    guarded, checked = [], []
+    for dim in ("entry_mode", "entry_conviction"):
+        buckets = defaultdict(list)
+        for t in window:
+            if t[dim] in ("manual", "unknown", "core"):
+                continue
+            buckets[t[dim]].append(t)
+        for value, ts in sorted(buckets.items()):
+            wins = sum(1 for t in ts if t["pnl_usd"] > 0)
+            row = {"dimension": dim, "value": value, "trades": len(ts),
+                   "win_rate": round(wins / len(ts), 3),
+                   "avg_return_pct": round(sum(t["return_pct"] for t in ts) / len(ts), 4)}
+            row["guarded"] = (len(ts) >= min_trades and row["win_rate"] < max_win_rate
+                              and row["avg_return_pct"] < max_avg_return)
+            checked.append(row)
+            if row["guarded"]:
+                guarded.append({**row, "size_multiplier": multiplier})
+    return {"as_of": today.isoformat(), "lookback_start": start.isoformat(),
+            "params": {"lookback_calendar_days": lookback_days, "min_closed_trades": min_trades,
+                       "max_win_rate": max_win_rate, "max_avg_return_pct": max_avg_return,
+                       "size_multiplier": multiplier},
+            "guarded": [{k: g[k] for k in ("dimension", "value", "trades", "win_rate",
+                                           "avg_return_pct", "size_multiplier")} for g in guarded],
+            "checked": checked}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--trade-log", default="trade_log.jsonl")
     p.add_argument("--fills", help="JSON file of filled equity orders (live mode)")
     p.add_argument("--positions", help="JSON file of open positions with current prices")
     p.add_argument("--since", required=True, help="start of this review's week, YYYY-MM-DD")
+    p.add_argument("--today", help="today's date, YYYY-MM-DD (default: system date)")
+    p.add_argument("--guard-out", help="write the performance guard to this file (e.g. performance_guard.json)")
+    p.add_argument("--guard-lookback-days", type=int, default=60)
+    p.add_argument("--guard-min-trades", type=int, default=10)
+    p.add_argument("--guard-max-win-rate", type=float, default=0.35)
+    p.add_argument("--guard-max-avg-return", type=float, default=0.0)
+    p.add_argument("--guard-size-multiplier", type=float, default=0.5)
     args = p.parse_args()
+    if not 0 < args.guard_size_multiplier <= 1:
+        print(json.dumps({"error": "--guard-size-multiplier must be in (0, 1]: the guard can only reduce size"}), file=sys.stderr)
+        sys.exit(1)
 
     try:
         log = load_log(args.trade_log)
@@ -217,6 +265,16 @@ def main():
 
     bench = next((l for l in reversed(log) if l.get("stage") == "benchmark"), None)
 
+    guard = None
+    if args.guard_out:
+        today = d(args.today) if args.today else date.today()
+        guard = compute_guard(trades, today, args.guard_lookback_days, args.guard_min_trades,
+                              args.guard_max_win_rate, args.guard_max_avg_return,
+                              args.guard_size_multiplier)
+        with open(args.guard_out, "w", encoding="utf-8") as f:
+            json.dump(guard, f, indent=2)
+            f.write("\n")
+
     print(json.dumps({
         "since": since.isoformat(),
         "fills_source": "fills file" if args.fills else "dry-run order lines",
@@ -228,6 +286,7 @@ def main():
         "approvals_this_week": approvals(log, since),
         "approvals_all_time": approvals(log, None),
         "latest_benchmark": bench,
+        "performance_guard": guard,
     }))
 
 

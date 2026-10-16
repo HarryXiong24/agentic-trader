@@ -12,7 +12,9 @@ later, instead of guesses.
 **Report-only.** This run never places, reviews, or cancels an order,
 never creates or updates an alert, never changes `risk_rules.json`, and
 never writes to `trade_log.jsonl` or `pending_proposals.jsonl`. It reads
-data and writes one report section.
+data and writes two things: one report section, and
+`performance_guard.json` (a tighten-only sizing guard the Trade run
+reads; see Step 3).
 
 ## Step 1 — Dates and state
 
@@ -43,9 +45,13 @@ history yet, then skip to Step 4.
 
 ## Step 3 — Run the review
 
-`python3 scripts/performance_review.py --trade-log trade_log.jsonl --since <since> [--fills <fills file>] [--positions <positions file>]`
+`python3 scripts/performance_review.py --trade-log trade_log.jsonl --since <since> --today <today> [--fills <fills file>] [--positions <positions file>] [--guard-out performance_guard.json --guard-lookback-days <performance_guard.lookback_calendar_days> --guard-min-trades <performance_guard.min_closed_trades> --guard-max-win-rate <performance_guard.max_win_rate> --guard-max-avg-return <performance_guard.max_avg_return_pct> --guard-size-multiplier <performance_guard.size_multiplier>]`
 
-Use its JSON output directly; don't recompute any number.
+Pass the `--guard-*` arguments only when `performance_guard.enabled` is
+true; the script then overwrites `performance_guard.json`. When it is
+false, leave the file as it is. Use the script's JSON output directly;
+don't recompute any number, and never edit `performance_guard.json` by
+hand.
 
 ## Step 4 — Report
 
@@ -69,7 +75,11 @@ missing; never overwrite earlier sections), headed
    how many were approved, declined or not filled, or still pending.
    Call out any declined stop-loss or other risk sell plainly: the rules
    only protect the account when their sells go through.
-6. **Observations:** two to four factual points the numbers support
+6. **Performance guard:** which buy types or conviction tiers are
+   guarded for the coming week (half size on new positions), and which
+   are close (enough trades but only one of the two conditions met). If
+   nothing is guarded, say so in one line.
+7. **Observations:** two to four factual points the numbers support
    (for example, "high-conviction trades are 3 for 3, medium 1 for 4").
    With fewer than 20 closed trades in total, say the sample is too
    small to tune on. Never propose or make a rule change in this run;
@@ -82,7 +92,7 @@ Never include an account number.
 Before committing, run the privacy grep from the run prompt and remove
 any match. Then:
 ```
-git add reports/
+git add reports/ performance_guard.json
 git commit -m "Weekly review <date>"
 git push origin HEAD:main
 ```
@@ -96,7 +106,8 @@ run name `Weekly review` / `每周复盘`.
 ## Hard rules
 
 - Read-only: no order, alert, watchlist, or scan write tools of any kind.
-- Never change `risk_rules.json`, `trade_log.jsonl`, or
+- Write only the report section and `performance_guard.json` (through
+  the script). Never change `risk_rules.json`, `trade_log.jsonl`, or
   `pending_proposals.jsonl`.
 - Use only the account named in the run prompt; never read any other
   account.

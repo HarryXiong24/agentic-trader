@@ -135,6 +135,17 @@
     "note": "While SPY is below its 200-day average, new tactical entries and top-ups are sized at new_entry_size_multiplier (multiplied with any pullback or loss-limit multiplier). It does not apply to the core sleeve (which already exits below the 200-day average) or to the defensive slot, and never forces a sell."
   },
 
+  "performance_guard": {
+    "enabled": true,
+    "lookback_calendar_days": 60,
+    "min_closed_trades": 10,
+    "max_win_rate": 0.35,
+    "max_avg_return_pct": 0.0,
+    "size_multiplier": 0.5,
+    "max_age_days": 14,
+    "note": "Tighten-only feedback from the weekly review. Each Saturday, scripts/performance_review.py looks at trades closed in the last lookback_calendar_days; any buy type (trend, pullback, etf, defensive) or entry-conviction tier with at least min_closed_trades trades whose win rate is below max_win_rate AND whose average return is below max_avg_return_pct is written to performance_guard.json. The Trade and manual runs then size new entries and top-ups in a guarded buy type or tier at size_multiplier (applied once, even if both match), multiplied with any other multiplier. It lifts automatically when a later review no longer finds the bucket failing. It can only reduce size (size_multiplier must be between 0 and 1), never forces a sell, never touches the core sleeve, and ignores a performance_guard.json older than max_age_days."
+  },
+
   "concentration_report": {
     "enabled": true,
     "flag_sector_pct": 0.50,
