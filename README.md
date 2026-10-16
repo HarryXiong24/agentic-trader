@@ -79,7 +79,7 @@ library. Commit and push the `risk_rules.json` changes.
 copy its full text into a new scheduled task, replace every
 placeholder, and give the task the Robinhood connector, the Gmail
 connector (if used), and push access to their repo. Schedules (Pacific
-time): Trade `52 8 * * 1-5`, Midday `22 12 * * 1-5`, Research
+time; prefix with `CRON_TZ=America/Los_Angeles` or convert to UTC): Trade `52 8 * * 1-5`, Midday `22 12 * * 1-5`, Research
 `23 14 * * 0-5`, Weekly review `7 9 * * 6`, Manual check with no
 schedule. Check that no `<...>`
 placeholder is left in any task.
@@ -216,7 +216,8 @@ candidates are bought:
   which ETF, if any, holds the ~25% core sleeve (QQQ, else SPY, else
   cash, whichever is above both its 50- and 200-day averages).
 - **Re-verify.** Re-check each proposal against the opening price. Run all
-  sells (stop-loss, take-profit, `exit_existing`) before any buy. Every
+  sells (stop-loss, take-profit, conviction trim, pre-earnings trim,
+  `exit_existing`) before any buy, merged into one order per stock. Every
   run also searches for news since the Research run's thesis (overnight earnings,
   downgrades, legal or regulatory news): a buy is dropped if the news
   breaks its thesis, and bad news on a held position is flagged at the
@@ -242,7 +243,7 @@ candidates are bought:
   bought at its conviction-tier size (high 12%, medium 8%, low 5% of the
   account; new positions under $10 are skipped) until 8 tactical
   positions or the `min_cash_buffer_pct` floor is reached. While SPY is
-  below its 200-day average, new tactical sizes are halved
+  below its 200-day average, new tactical entries and top-ups are halved
   (`regime_sizing`; defensive names excepted).
 - **Earnings on held positions** (`earnings_risk.py`). Held positions
   with a report within 5 trading days are flagged at the top of the
@@ -274,8 +275,8 @@ any declined risk sells), and the result against SPY and QQQ. It never
 trades or changes a rule; it gives you evidence before you tune one.
 Its one automatic output is the **performance guard**
 (`performance_guard.json`): a buy type or conviction tier that is
-clearly failing (10+ closed trades in 60 days, win rate under 35%, and
-average return below zero) gets half size on new positions in the
+clearly failing (10+ closed positions in 60 days, win rate under 35%, and
+average return below zero) gets half size on new entries and top-ups in the
 following week's runs, until it recovers. The guard can only reduce
 size, never raise it.
 
@@ -404,7 +405,7 @@ regenerated every run, symbols genericized):
 > - EXAMPLE — stop 7.00% (vol-scaled), drawdown -2.3% — holding
 >
 > **New-entry candidates considered**: OTHER, ANOTHER
-> - OTHER — approved: medium conviction, $60.00 (12% of account)
+> - OTHER — approved: high conviction, $60.00 (12% of account)
 > - ANOTHER — rejected: max_concurrent_positions already filled this cycle
 >
 > **Orders placed**: OTHER — buy $60.00 (dry_run)
@@ -498,10 +499,10 @@ explaining it. The main settings and their defaults:
 | `pullback_mode.whitelist` | Mag 7, TSM, ASML, SMH | names that may be bought on a 10%+ pullback below the 200-day average |
 | `defensive.max_positions` | `1` | defensive names, only while SPY is below its 50-day average |
 | `entry_price_gap` / `entry_extension` / `earnings_blackout` | 3% / 10% / 5 days | buy-gate limits |
-| `regime_sizing` | ×0.5 below SPY's 200-day | new tactical sizes while the market is in a downtrend |
+| `regime_sizing` | ×0.5 below SPY's 200-day | new tactical entries and top-ups while the market is in a downtrend |
 | `earnings_hold` | 5 days, sell 50% of low | pre-earnings flag window and trim for held positions |
 | `concentration_report.flag_sector_pct` | 50% | sector share that gets flagged in the report (never a cap) |
-| `performance_guard` | 10 trades / 60 days, <35% wins and <0% avg → ×0.5 | tighten-only sizing for a buy type or tier the weekly review finds failing |
+| `performance_guard` | 10 closed positions / 60 days, <35% wins and <0% avg → ×0.5 | tighten-only sizing for a buy type or tier the weekly review finds failing |
 | `cadence.news_search_budget_per_cycle` | `30` | news searches per Research run |
 
 The sizing is tuned for roughly $500 to $1,500. Under about $500, 6
@@ -561,7 +562,9 @@ submitted once `execution.mode` is `"live"` and Robinhood's trade
 approval is on, so every order still waits for you to approve it in the
 Robinhood app; with approval off, the runs submit nothing.
 
-Suggested schedules (cron, Pacific time): Trade `52 8 * * 1-5`, Midday
+Suggested schedules (cron in Pacific time, so prefix each with
+`CRON_TZ=America/Los_Angeles` if your scheduler supports it, or convert
+to UTC): Trade `52 8 * * 1-5`, Midday
 `22 12 * * 1-5`, Research `23 14 * * 0-5`, Weekly review `7 9 * * 6`,
 Manual check with no schedule.
 
@@ -650,7 +653,7 @@ truth — one line per decision; `trade_log_recent.md`, shown under "See
 it in action" above, is just its daily recap):
 
 ```json
-{"date": "2026-07-10", "timestamp": "08:38:10", "symbol": "EXAMPLE", "stage": "risk_check", "passed": true, "conviction": "medium", "risk_flags": [], "pct_below_52wk_high": 0.08, "proposal_date": "2026-07-09", "position_size_usd": 60.00, "concurrent_positions_after": 2, "cash_remaining_after": 340.00, "cash_buffer_after_pct": 0.34}
+{"date": "2026-07-10", "timestamp": "08:38:10", "symbol": "EXAMPLE", "stage": "risk_check", "passed": true, "conviction": "medium", "risk_flags": [], "pct_below_52wk_high": 0.08, "proposal_date": "2026-07-09", "dollar_amount": 60.00, "concurrent_positions_after": 2, "cash_remaining_after": 340.00, "cash_buffer_after_pct": 0.34}
 {"date": "2026-07-09", "timestamp": "08:35:12", "symbol": "EXAMPLE", "stage": "order", "mode": "dry_run", "action": "buy", "dollar_amount": 60.00, "quote_ask": 84.20, "quantity": 0.712, "would_execute": true, "review_alerts": "none (order_checks empty)", "proposal_date": "2026-07-09"}
 {"date": "2026-07-10", "timestamp": "08:38:30", "symbol": "OTHER", "stage": "stop_loss", "entry_conviction": "medium", "entry_price": 100.00, "current_price": 92.50, "atr14": 2.80, "stop_price": 93.00, "stop_basis": "atr_x2.5", "drawdown_from_reference": 0.075, "triggered": true, "action": "sell_full_position"}
 ```

@@ -6,8 +6,9 @@ Automated second half of this pipeline (see `README.md`), run every
 weekday around 9:00am Pacific (about 2.5 hours after the open, once
 opening volatility has settled and when the account owner can approve orders in the
 Robinhood app) as a cloud routine.
-Performs **Steps 4–9**, consuming candidates from the Research run's
-`pending_proposals.jsonl`.
+Performs Step 0 and **Steps 3–9** below (this spec's own numbering; the
+Research run's Steps 1–3 are separate), consuming candidates from the
+Research run's `pending_proposals.jsonl`.
 
 Authorized to place real live orders under a narrow condition (see Step
 6's "Live-order gate" — Step 8 reuses the identical gate for buys).
@@ -22,7 +23,7 @@ All numbers live in `risk_rules.json`.
 
 1. **Core sleeve.** About 25% of the account sits in QQQ (or SPY, or
    cash) depending on which is in an uptrend (Step 3, Step 7).
-2. **Up to 8 tactical positions**, sized by conviction (12% / 8% / 5%); new positions under $10 are skipped. While SPY is below its 200-day average, new tactical sizes are halved (`regime_sizing`).
+2. **Up to 8 tactical positions**, sized by conviction (12% / 8% / 5%); new positions under $10 are skipped. While SPY is below its 200-day average, new tactical entries and top-ups are halved (`regime_sizing`).
 3. **Quality pullbacks.** Mag 7 names, TSM, ASML, and SMH may be bought below their
    200-day average once they are well off the high and technically
    stabilizing, in two tranches (Step 4).
@@ -42,8 +43,8 @@ All numbers live in `risk_rules.json`.
    50% of the account. It is information only, never a cap
    (`concentration_report`, Step 9).
 10. **Performance guard.** A buy type or conviction tier that the weekly
-   review finds clearly failing (10+ closed trades in 60 days, win rate
-   under 35%, average return below zero) gets half size on new positions
+   review finds clearly failing (10+ closed positions in 60 days, win rate
+   under 35%, average return below zero) gets half size on new entries and top-ups
    until it recovers. It can only reduce size (`performance_guard`, Step 7).
 
 ## Step 0 — Load state (do this first, every run)
@@ -335,7 +336,15 @@ the start of this step, before any of this cycle's sells execute in
 Step 6), check `trade_log.jsonl` for `"stage": "take_profit"` entries
 for this symbol at each tier's exact `gain_pct`, logged since the
 position's quantity last reached zero (a full exit) — collect the
-`gain_pct` values already fired this holding period.
+`gain_pct` values already fired this holding period. A tier counts as
+fired only if the sell for it actually went out: a sell `order` line for
+the symbol that comes after that `take_profit` line in `trade_log.jsonl`,
+from the same run (same `date` and same `run` value, or both without
+`run`), whose `reason` or `reasons` includes `take_profit`, with
+`"placed": true` in live or `"would_execute": true` without
+`market_closed` in dry run. A tier whose sell was skipped fires again.
+The stop-loss check's trailing-high rule uses this same definition of a
+fired tier.
 
 Run:
 `python3 scripts/take_profit.py --average-cost <avg cost> --current-price <fresh quote> --quantity <quantity> --tiers <risk_rules.json take_profit.tiers as "gain_pct:sell_fraction" pairs, e.g. "0.15:0.25,0.30:0.25,0.50:0.25"> [--already-fired <comma-separated gain_pct values already fired this holding period>]`
@@ -379,14 +388,21 @@ period, not a top-up).
 
 Skip entirely if `risk_rules.json`'s `conviction_trim.enabled` is `false`.
 Otherwise, for every **held** position, using this cycle's fresh
-effective conviction (Step 4) and `target_size` (from the same inputs gathered for Step
-7's priority-order ranking — pull those first if not yet available),
+effective conviction (Step 4) and `target_size` = the unmultiplied
+conviction-tier size, `position_sizing.conviction_pct[<conviction>] ×
+total_value` (never apply the pullback, regime, loss-limit, or
+performance-guard multipliers here: they only size new buys and must
+never turn into a trim),
 look back through this symbol's `risk_check` entries in `trade_log.jsonl`,
 most recent first, and count consecutive entries (not including this
 cycle, and not crossing back over a prior full exit to zero) where
 `conviction != "high"` (i.e. `"low"` or `"medium"`) and
-`current_position_value` exceeded `target_size` by more than
-`conviction_trim.overweight_trigger_pct`.
+`current_position_value` exceeded that cycle's unmultiplied tier size by
+more than `conviction_trim.overweight_trigger_pct`. Recompute that size
+as `position_sizing.conviction_pct[<that line's conviction>] ×` this
+cycle's `total_value`; never use a past line's logged `target_size`,
+which may include the pullback, regime, loss-limit, or guard
+multipliers.
 
 Run:
 `python3 scripts/conviction_trim.py --conviction <this cycle's conviction> --current-position-value <current_position_value> --target-size <target_size> --overweight-trigger-pct <conviction_trim.overweight_trigger_pct> --prior-consecutive-overweight-cycles <count from the lookback above> --min-overweight-conviction-cycles <conviction_trim.min_overweight_conviction_cycles>`
@@ -423,16 +439,25 @@ every held position that is not a core-sleeve position, call
 `get_earnings_results` for the symbol and take the next unreported
 report: its `report.date`, its timing (`am` or `pm`, null if unknown),
 and the trading days from today to that date (0 if today; null if no
-upcoming report is known). Set `already_trimmed` to true if
-`trade_log.jsonl` already has an `earnings_check` line for this symbol
-and `report_date` with `"action": "sell_partial_position"`. Pass every
-held position as a JSON array on stdin:
+upcoming report is known). Set `already_trimmed` to true only if
+`trade_log.jsonl` has an `order` line for this symbol whose `reason` or
+`reasons` includes `earnings_trim` with this `report_date`, and that
+order actually went out: `"placed": true` in live (whether the account
+owner then approved or declined it; a declined trim is their decision
+and is not retried), or `"would_execute": true` without `market_closed`
+in dry run. An `earnings_check` line alone, a closed-market manual run,
+or an order skipped as already pending or blocked by review does not
+count, so the trim is tried again on the next run while the window is
+open. Run this check after the stop-loss, take-profit, and
+conviction-trim checks, and pass every held position as a JSON array on
+stdin:
 
 `python3 scripts/earnings_risk.py --flag-window-trading-days <earnings_hold.flag_window_trading_days> --trim-convictions <earnings_hold.trim_convictions, comma-joined> --trim-fraction <earnings_hold.trim_fraction_of_position> [--trim-enabled]`
 
 with objects shaped `{"symbol", "entry_conviction" (the conviction at
 entry, recovered the same way as for the stop-loss check; "medium" if
-missing), "mode", "quantity",
+missing), "mode", "quantity" (the quantity left after this cycle's
+stop-loss, take-profit, and conviction-trim sells for the symbol),
 "trading_days_until_earnings", "report_date", "report_timing",
 "already_trimmed"}`. Pass `--trim-enabled` only when
 `earnings_hold.trim_enabled` is true. Use the script's JSON output
@@ -445,7 +470,8 @@ directly. Skip any position a stop-loss already fully sells this cycle.
 - For `"action": "sell_partial_position"`, sell `sell_quantity` (round
   to a quantity the broker accepts) in Step 6's sell-execution pass,
   never blocked by a loss-limit halt, the same as a take-profit tier,
-  with `--reason earnings_trim`.
+  with `--reason earnings_trim`, and record `report_date` on the
+  `order` line.
 - If the script fails to run, log the failure, sell nothing for this
   check, and flag every held position with a known report inside the
   window for manual review. It does not halt entries.
@@ -458,6 +484,24 @@ this procedure for each, before touching anything buy-side below — a
 sell must actually clear before its freed cash/slot can be counted
 toward a same-cycle buy, and before today's realized P&L (loss-limit
 check, further down) can see it.
+
+**One sell order per symbol per run.** If more than one sell fires for
+the same symbol this cycle, submit a single sell for that symbol: a
+stop-loss or `exit_existing` sells the whole position; otherwise sum the
+quantities of the fired take-profit tiers, the conviction trim, and the
+pre-earnings trim, capped at the quantity available to sell (live:
+`shares_available_for_sells` from `get_equity_positions`; dry run: the
+paper ledger's quantity). When take-profit tiers also fire, size the
+conviction trim on what still exceeds the target after them.
+Log one `order` line with `"reasons": [every reason that fired]` and
+`"reason"` set to the first that applies in this order: `stop_loss`,
+`exit_existing`, `take_profit`, `conviction_trim`, `earnings_trim`
+(carry `report_date` when `earnings_trim` is among them). The per-check
+lines (`stop_loss`, `take_profit`, `conviction_trim`, `earnings_check`)
+are still logged once each. A sell that is skipped (already pending,
+blocked by review, market closed, trade approval off) does not count as
+done for any of its reasons, so take-profit tiers and pre-earnings trims
+fire again on a later run.
 
 1. **Always** call `review_equity_order` first — a preview, never places
    anything.
@@ -532,7 +576,7 @@ failure and skip that candidate. Every `order` entry must carry
 
 **Wash-sale flag on sells (informational only, never blocks a sell):**
 whenever the stop-loss check triggers, a take-profit tier fires, a
-conviction-trim fires, or an
+conviction-trim fires, a pre-earnings trim fires, or an
 `exit_existing` sell is processed, and that specific sale realizes a
 loss (a stop-loss sell is always a loss by definition; check
 take-profit/`exit_existing` case by case against the fill), check the
@@ -664,7 +708,7 @@ held position, note "news check failed" in the report.
 ### Buy gate (every day)
 
 **Buys only — new entries and top-ups; never applies to
-stop_loss/take_profit/conviction_trim/exit_existing sells, which are
+stop_loss/take_profit/conviction_trim/earnings_trim/exit_existing sells, which are
 never gated on price or tax considerations.** One script call answers
 every independent, per-symbol condition that can block this candidate;
 `position_sizing.py`'s slot/cash allocation across the whole candidate
@@ -860,8 +904,9 @@ and `concurrent_positions_start` (open tactical positions, as in the
 **Performance guard.** If `performance_guard.enabled` is true and
 `performance_guard.json` has an `as_of` date no more than
 `performance_guard.max_age_days` days old, a candidate whose Step 4 mode
-(`trend`, `pullback`, `etf`, or `defensive`) matches a guarded
-`entry_mode`, or whose effective conviction matches a guarded
+(`trend`, `pullback`, `etf`, or `defensive`; for a held top-up, the
+`entry_mode` of the position's opening buy, from its `order` line or
+the paper ledger) matches a guarded `entry_mode`, or whose effective conviction matches a guarded
 `entry_conviction`, gets its `size_multiplier` multiplied by that
 entry's `size_multiplier`, once, even if both match. Ignore any
 `size_multiplier` above 1 in the file. If the file is missing, empty, or
@@ -871,7 +916,7 @@ any active guard in the recap.
 
 Rank the candidates, then size them — pipe the candidate list (a JSON
 array) through both scripts in sequence (directly chainable):
-`python3 scripts/rank_candidates.py | python3 scripts/position_sizing.py --total-value <total_value> --cash-start <cash> --concurrent-positions-start <concurrent_positions_start> [--entries-halted] --max-position-pct <position_sizing.max_position_pct_of_account> --max-concurrent-positions <position_sizing.max_concurrent_positions> --min-cash-buffer-pct <position_sizing.min_cash_buffer_pct> --min-top-up-usd <position_sizing.min_top_up_usd> --min-top-up-pct-of-target <position_sizing.min_top_up_pct_of_target> --conviction-pct "<position_sizing.conviction_pct as high:0.15,medium:0.10,low:0.075>" --min-new-position-usd <position_sizing.min_new_position_usd> [--size-multiplier <from the loss-limit check>]`
+`python3 scripts/rank_candidates.py | python3 scripts/position_sizing.py --total-value <total_value> --cash-start <cash> --concurrent-positions-start <concurrent_positions_start> [--entries-halted] --max-position-pct <position_sizing.max_position_pct_of_account> --max-concurrent-positions <position_sizing.max_concurrent_positions> --min-cash-buffer-pct <position_sizing.min_cash_buffer_pct> --min-top-up-usd <position_sizing.min_top_up_usd> --min-top-up-pct-of-target <position_sizing.min_top_up_pct_of_target> --conviction-pct "<position_sizing.conviction_pct, e.g. high:0.12,medium:0.08,low:0.05>" --min-new-position-usd <position_sizing.min_new_position_usd> [--size-multiplier <from the loss-limit check>]`
 `rank_candidates.py` sorts by conviction tier first (`high` before
 `medium` before `low`), then `risk_flags` count ascending within a
 tier (a missing `risk_flags` field sorts last, treated as worst
@@ -949,6 +994,23 @@ including Step 7's news-check rejections, buy-gate rejections
 evaluations), and `order` stages, matching the shape already in
 `trade_log.jsonl`/`trade_log_template.jsonl`. Top-up entries must include
 `"position_action": "top_up"`.
+
+**Required fields** (the weekly review reads these; examples of each are
+in `trade_log_template.jsonl`):
+- Buy `order`: `symbol`, `"action": "buy"`, `mode`, `conviction`,
+  `entry_mode` (`trend`, `pullback`, `etf`, `defensive`, or `core`),
+  `dollar_amount`, `placed` (live) or `would_execute` (dry run),
+  `approval_id` and `order_id` when known, `order_state`, `proposal_date`.
+- Sell `order`: `symbol`, `"action": "sell"`, `mode`, `quantity`,
+  `reason`, `reasons`, `placed` or `would_execute`, `approval_id` and
+  `order_id` when known, `order_state`, and `report_date` for an
+  earnings trim.
+- `order_update`: `symbol`, `side`, `approval_id`, `approval_state`
+  (`approved`, `declined`, or `expired`), `order_id`, `order_state`,
+  `fill_price`, `fill_quantity`.
+- `earnings_check`: the `earnings_risk.py` result fields for the symbol.
+- `regime`: `risk_off`, `spy_below_sma200`, `core_target`.
+- `concentration`: the `concentration.py` output.
 
 **Every line — including the final `cycle_summary` — needs a real
 `"timestamp"`** (`HH:mm:ss`, e.g. via `TZ='America/Chicago' date +'%H:%M:%S'`
@@ -1132,5 +1194,5 @@ check, and an appended recap).
   what failed.
 - The wash-sale guard (Step 7's buy gate) only ever blocks a buy. It
   must never block, delay, or resize a
-  stop_loss/take_profit/conviction_trim/exit_existing sell — a tax
+  stop_loss/take_profit/conviction_trim/earnings_trim/exit_existing sell — a tax
   outcome never overrides risk management.

@@ -36,6 +36,9 @@ def main():
     except json.JSONDecodeError as e:
         print(json.dumps({"error": f"invalid JSON input: {e}"}), file=sys.stderr)
         sys.exit(1)
+    if not isinstance(positions, list) or not isinstance(groups, dict) or not isinstance(etf_sectors, dict):
+        print(json.dumps({"error": "positions must be an array; --sector-groups and --etf-sectors must be JSON objects"}), file=sys.stderr)
+        sys.exit(1)
     if args.total_value <= 0:
         print(json.dumps({"error": "total_value must be positive"}), file=sys.stderr)
         sys.exit(1)
@@ -43,15 +46,21 @@ def main():
     raw_to_group = {raw: g for g, raws in groups.items() for raw in raws}
 
     exposure = {}
+    skipped = []
     for pos in positions:
-        sym = pos["symbol"]
+        sym = pos.get("symbol", "?")
+        try:
+            value = float(pos["value"])
+        except (KeyError, TypeError, ValueError):
+            skipped.append(sym)
+            continue
         if sym in etf_sectors:
             label = etf_sectors[sym]
         else:
             raw = pos.get("sector") or "Unknown"
             label = raw_to_group.get(raw, raw)
         entry = exposure.setdefault(label, {"sector": label, "value": 0.0, "symbols": []})
-        entry["value"] += float(pos["value"])
+        entry["value"] += value
         entry["symbols"].append(sym)
 
     rows = []
@@ -69,6 +78,7 @@ def main():
         "flag_pct": args.flag_pct,
         "sectors": rows,
         "flagged_sectors": [r["sector"] for r in rows if r["flagged"]],
+        "skipped_symbols_missing_value": skipped,
     }))
 
 

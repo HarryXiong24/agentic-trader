@@ -5,7 +5,8 @@ _Part of agentic-trader. MIT License._
 Has no schedule. The account owner starts it by hand whenever they want a check
 right now, for example after a big intraday move or before deciding
 whether to step in. It runs the full Trade cycle immediately: sells
-first (stop-loss, take-profit, conviction trim, `exit_existing`), then
+first (stop-loss, take-profit, conviction trim, pre-earnings trim,
+`exit_existing`), then
 the buy gate, ranking, and sizing on the current
 `pending_proposals.jsonl`.
 
@@ -42,10 +43,12 @@ at the next open.
    (`get_equity_quotes`) is less than 5 minutes old.
    - **Open:** behave exactly like the Trade run. In `dry_run`, would-be
      orders are applied to the paper ledger.
-   - **Closed:** run every check (stop-loss, take-profit, buy gate,
-     ranking, sizing) on the latest prices for analysis only. Log
-     would-be orders with `"market_closed": true`, do **not** apply them
-     to the paper ledger, and report what would happen at the next open.
+   - **Closed:** run every check (stop-loss, take-profit, pre-earnings,
+     buy gate, ranking, sizing) on the latest prices for analysis only.
+     Log would-be orders with `"market_closed": true`, do **not** apply
+     them to the paper ledger, and report what would happen at the next
+     open. These lines never count as a sell that went out, so a
+     take-profit tier or pre-earnings trim still fires on the next run.
      Stop-level alerts may still be updated.
 4. **Idempotency is unchanged.** A proposal already decided by an
    earlier run (matching `proposal_date`) is skipped, so a manual run

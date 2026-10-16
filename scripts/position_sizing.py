@@ -20,6 +20,8 @@ Optional (both default to 1.0): a candidate may carry "size_multiplier" (default
 scales its conviction-tier size (e.g. 0.5 for a pullback first tranche),
 and --size-multiplier scales every candidate (e.g. 0.5 after a soft
 loss-limit breach). Both multiply the conviction-tier percentage.
+Multipliers can only reduce size: any value above 1 is treated as 1, and
+a value of 0 or below is an error.
 """
 import argparse
 import json
@@ -50,12 +52,16 @@ def main():
     p.add_argument("--min-top-up-usd", type=float, required=True)
     p.add_argument("--min-top-up-pct-of-target", type=float, required=True)
     p.add_argument("--conviction-pct", type=parse_pct_map, required=True,
-                    help='fixed conviction-tier sizing table, e.g. "high:0.15,medium:0.10,low:0.075"')
+                    help='fixed conviction-tier sizing table from risk_rules.json, e.g. "high:0.12,medium:0.08,low:0.05"')
     p.add_argument("--min-new-position-usd", type=float, default=0.0,
                     help="skip a new entry whose dollar amount is below this (default 0 = no minimum)")
     p.add_argument("--size-multiplier", type=float, default=1.0,
                     help="optional global multiplier on every conviction-tier size (default 1.0)")
     args = p.parse_args()
+    if args.size_multiplier <= 0:
+        print(json.dumps({"error": "--size-multiplier must be above 0"}), file=sys.stderr)
+        sys.exit(1)
+    global_multiplier = min(1.0, args.size_multiplier)
 
     try:
         candidates = json.load(sys.stdin)
@@ -73,8 +79,16 @@ def main():
         symbol = c["symbol"]
         group = c["group"]
         conviction = c["conviction"]
-        conviction_pct = (args.conviction_pct[conviction] * args.size_multiplier
-                          * float(c.get("size_multiplier", 1.0)))
+        try:
+            cand_multiplier = float(c.get("size_multiplier", 1.0))
+        except (TypeError, ValueError):
+            print(json.dumps({"error": f"size_multiplier for {symbol} must be a number"}), file=sys.stderr)
+            sys.exit(1)
+        if cand_multiplier <= 0:
+            print(json.dumps({"error": f"size_multiplier for {symbol} must be above 0"}), file=sys.stderr)
+            sys.exit(1)
+        conviction_pct = (args.conviction_pct[conviction] * global_multiplier
+                          * min(1.0, cand_multiplier))
 
         if args.entries_halted:
             halted_result = {

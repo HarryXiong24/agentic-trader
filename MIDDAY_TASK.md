@@ -42,16 +42,19 @@ cancels either.
 
 Log `"stage": "stop_loss"` and `"stage": "take_profit"` lines in the
 same shape as the Trade run, each with an extra `"run": "midday"` field. The
-Trade run reads fired tiers from these same lines, so a tier fired at midday is
-never fired again the next morning.
+Trade run reads fired tiers from these lines together with the sell `order`
+line that follows them: a tier fired at midday whose sell went out is never
+fired again the next morning, while one whose sell was skipped (already
+pending, blocked by review, market closed) fires again. Sells of the same
+symbol are merged into one order, as `TRADE_TASK.md` Step 6 describes.
 
 ## Step 2 — Execute sells
 
 - `dry_run`: apply each sell to the paper ledger exactly as
   `TRADE_TASK.md`'s "Applying dry-run orders" describes (no order
   review for paper positions), and log `"stage": "order", "mode":
-  "dry_run", "run": "midday", "would_execute": true` with the script's
-  `realized_pnl_usd` and `cash_after`.
+  "dry_run", "run": "midday", "would_execute": true` with `reason`,
+  `reasons`, and the script's `realized_pnl_usd` and `cash_after`.
 - `live`: follow `TRADE_TASK.md` Step 6's sell procedure and its
   live-order gate exactly, including the trade-approval check in its
   Hard rules. (The scheduled task that runs this spec may forbid live

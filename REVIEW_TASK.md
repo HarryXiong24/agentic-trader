@@ -27,12 +27,17 @@ history yet, then skip to Step 4.
 ## Step 2 — Fills and open positions
 
 - **`live`:** call `get_equity_orders` for the account with
-  `state: "filled"` and `created_at_gte` set to the earliest `date` in
-  `trade_log.jsonl`, paging with `cursor` until `next` is empty. For
-  each order, write one object to a scratch file outside the repo
-  (never commit it): `{"symbol", "side", "quantity": cumulative_quantity,
+  `created_at_gte` set to the earliest `date` in `trade_log.jsonl`, once
+  with `state: "filled"` and once with `state: "cancelled"` (a partly
+  filled order that was then cancelled or expired keeps its filled
+  shares), paging each with `cursor` until `next` is empty. Keep every
+  order whose `cumulative_quantity` is above 0, and write one object per
+  order to a scratch file outside the repo (never commit it):
+  `{"order_id": id, "symbol", "side", "quantity": cumulative_quantity,
   "price": average_price, "date": <last_transaction_at as an
-  America/Chicago date>, "agent_initiated"}`. Orders with
+  America/Chicago date>, "agent_initiated"}`. If an order lacks the
+  `agent_initiated` field, query again with `agent_initiated: true` and
+  with `agent_initiated: false` to tell them apart. Orders with
   `agent_initiated: false` were placed by hand; the script reports them
   separately as `manual`. Then call `get_equity_positions` and
   `get_equity_quotes` and write a second scratch file of
@@ -45,7 +50,7 @@ history yet, then skip to Step 4.
 
 ## Step 3 — Run the review
 
-`python3 scripts/performance_review.py --trade-log trade_log.jsonl --since <since> --today <today> [--fills <fills file>] [--positions <positions file>] [--guard-out performance_guard.json --guard-lookback-days <performance_guard.lookback_calendar_days> --guard-min-trades <performance_guard.min_closed_trades> --guard-max-win-rate <performance_guard.max_win_rate> --guard-max-avg-return <performance_guard.max_avg_return_pct> --guard-size-multiplier <performance_guard.size_multiplier>]`
+`python3 scripts/performance_review.py --trade-log trade_log.jsonl --since <since> --today <today> [--fills <fills file>] [--positions <positions file>] [--guard-out performance_guard.json --guard-lookback-days <performance_guard.lookback_calendar_days> --guard-min-trades <performance_guard.min_closed_positions> --guard-max-win-rate <performance_guard.max_win_rate> --guard-max-avg-return <performance_guard.max_avg_return_pct> --guard-size-multiplier <performance_guard.size_multiplier>]`
 
 Pass the `--guard-*` arguments only when `performance_guard.enabled` is
 true; the script then overwrites `performance_guard.json`. When it is
@@ -76,7 +81,7 @@ missing; never overwrite earlier sections), headed
    Call out any declined stop-loss or other risk sell plainly: the rules
    only protect the account when their sells go through.
 6. **Performance guard:** which buy types or conviction tiers are
-   guarded for the coming week (half size on new positions), and which
+   guarded for the coming week (half size on new entries and top-ups), and which
    are close (enough trades but only one of the two conditions met). If
    nothing is guarded, say so in one line.
 7. **Observations:** two to four factual points the numbers support
