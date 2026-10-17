@@ -276,24 +276,47 @@ def block(trades):
 
 
 def rule_fires(log, since):
+    """How often each rule fired. With several checks a day, a rule that fires again on the
+    same position the same day (for example a declined stop-loss that is resubmitted) counts
+    once per symbol and day; risk checks count every line."""
     c = defaultdict(int)
+    seen = defaultdict(set)
+
+    def once(key, ident):
+        if ident not in seen[key]:
+            seen[key].add(ident)
+            c[key] += 1
+
+    def went_out(l):
+        return bool(l.get("placed") or (l.get("mode") == "dry_run" and l.get("would_execute")
+                                        and not l.get("market_closed")))
+
     for l in log:
         when = dated(l)
         if since and (when is None or when < since):
             continue
         s = l.get("stage")
+        sym, day = l.get("symbol"), l.get("date")
+        reasons = set(l.get("reasons") or []) | ({l["reason"]} if l.get("reason") else set())
         if s == "stop_loss" and l.get("triggered"):
-            c["stop_loss_triggered"] += 1
+            once("stop_loss_triggered", (sym, day))
         elif s == "take_profit" and l.get("triggered"):
-            c["take_profit_fired"] += 1
+            once("take_profit_fired", (sym, day, l.get("tier_gain_pct")))
         elif s == "conviction_trim" and l.get("triggered"):
-            c["conviction_trim_fired"] += 1
-        elif s == "order" and (l.get("reason") == "earnings_trim" or "earnings_trim" in (l.get("reasons") or [])) \
-                and (l.get("placed") or (l.get("mode") == "dry_run" and l.get("would_execute")
-                                         and not l.get("market_closed"))):
-            c["earnings_trim_placed"] += 1
+            once("conviction_trim_fired", (sym, day))
+        elif s == "order" and l.get("action") == "sell" and went_out(l):
+            if "earnings_trim" in reasons:
+                once("earnings_trim_placed", (sym, day))
+            if "news_exit" in reasons:
+                once("news_exit_submitted", (sym, day))
+        elif s == "order" and l.get("action") == "buy" and l.get("retry") and went_out(l):
+            c["buy_retries_submitted"] += 1
+        elif s == "news_exit":
+            once("news_checks_after_move", (sym, day, l.get("timestamp")))
+        elif s == "market_alert" and l.get("alert"):
+            once("market_drop_alerts", (day,))
         elif s == "earnings_check" and l.get("flagged"):
-            c["earnings_flags"] += 1
+            once("earnings_flags", (sym, day))
         elif s == "news_alert":
             c["news_alerts"] += 1
         elif s == "risk_check":

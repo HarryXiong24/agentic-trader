@@ -356,7 +356,7 @@ def main():
     s.add_argument("--quantity", type=float, required=True)
     s.add_argument("--price", type=float, required=True, help="the current quote bid")
     s.add_argument("--date", required=True)
-    s.add_argument("--reason", required=True, help="stop_loss | take_profit | conviction_trim | earnings_trim | exit_existing | core_exit | core_rotation | core_rebalance")
+    s.add_argument("--reason", required=True, help="stop_loss | news_exit | take_profit | conviction_trim | earnings_trim | exit_existing | core_exit | core_rotation | core_rebalance")
     s.set_defaults(func=cmd_sell)
 
     s = sub.add_parser("set-meta")

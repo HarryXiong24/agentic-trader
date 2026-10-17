@@ -3,9 +3,12 @@
 _Part of agentic-trader. MIT License._
 
 Automated subset of this pipeline (see `README.md`), run as a cloud
-routine after the close every weekday and on Sunday afternoon (so
-weekend news is in Monday's proposals), and startable by hand on any
-day.
+routine every Sunday through Thursday evening (Pacific), so the next
+morning's Trade run has fresh proposals, and startable by hand on any
+day. There is no Friday run: Sunday's run replaces Thursday's proposals
+before Monday's Trade run anyway, with the weekend's news in it.
+Running in the evening also means the day's after-close earnings
+reports and their after-hours reaction are already out.
 
 ## Run days — weekends and holidays included
 
@@ -21,7 +24,7 @@ reason to skip it. On a day the market did not trade:
   policy) are part of each thesis.
 - Proposals are dated with today's run date as usual. The next Trade run
   uses whichever proposals are newest, so a Sunday run replaces
-  Friday's.
+  Thursday's.
 
 Performs **ONLY Steps 1–3**. **NEVER** Step 4 (re-verify), 5 (risk
 enforcement), 6 (dry run/order review), or 7 (`trade_log.jsonl`) — those

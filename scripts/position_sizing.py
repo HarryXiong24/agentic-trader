@@ -107,18 +107,23 @@ def main():
             candidate_cash_after = cash_remaining - dollar_amount
 
             reasons = []
+            codes = []
             if dollar_amount < max(1.00, args.min_new_position_usd):
+                codes.append("below_min_size")
                 reasons.append(f"new position ${dollar_amount:.2f} is below min_new_position_usd "
                                f"(${max(1.00, args.min_new_position_usd):.2f}) — too small to be worth an order")
             if conviction_pct > args.max_position_pct:
+                codes.append("above_max_position")
                 reasons.append(f"position size {conviction_pct:.4%} exceeds max_position_pct_of_account {args.max_position_pct:.4%}")
             if candidate_concurrent_after > args.max_concurrent_positions:
+                codes.append("concurrency_cap")
                 reasons.append(
                     f"concurrent_positions_after ({candidate_concurrent_after}) exceeds "
                     f"max_concurrent_positions ({args.max_concurrent_positions}) — cap filled by "
                     f"higher-priority candidates this cycle"
                 )
             if candidate_cash_after < min_cash_buffer:
+                codes.append("cash_buffer")
                 reasons.append(
                     f"cash_remaining after trade (${candidate_cash_after:.2f}) would fall below "
                     f"min_cash_buffer_pct (${min_cash_buffer:.2f}) of total_value"
@@ -128,6 +133,9 @@ def main():
                 results.append({
                     "symbol": symbol, "group": group, "conviction": conviction,
                     "passed": False, "reason": "; ".join(reasons),
+                    "blocking": codes,
+                    # slots and cash can free up later the same day (a sell fills)
+                    "retry_eligible": set(codes) <= {"concurrency_cap", "cash_buffer"},
                     "dollar_amount": dollar_amount,
                 })
                 continue
@@ -186,6 +194,7 @@ def main():
                 results.append({
                     "symbol": symbol, "group": group, "conviction": conviction,
                     "passed": False, "position_action": "top_up",
+                    "blocking": ["cash_buffer"], "retry_eligible": True,
                     "reason": (
                         f"cash_remaining after trade (${candidate_cash_after:.2f}) would fall below "
                         f"min_cash_buffer_pct (${min_cash_buffer:.2f}) of total_value"

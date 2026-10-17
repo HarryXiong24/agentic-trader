@@ -7,9 +7,10 @@ Scheduled Claude sessions screen stocks, write out their reasoning, and
 enforce mechanical, auditable risk rules on every trade. The safety
 mechanism is the rules, not the model's judgment.
 
-It includes a dry-run paper portfolio, an SPY/QQQ benchmark, a midday
-stop-loss check, an on-demand manual check, stop-level price alerts,
-bilingual daily reports, and strict account-isolation and privacy rules.
+It includes a dry-run paper portfolio, an SPY/QQQ benchmark, hourly
+intraday checks (stops, news exits, buy retries), an on-demand manual
+check, a weekly review, stop-level price alerts, bilingual daily
+reports, and strict account-isolation and privacy rules.
 
 Read "What this does and doesn't solve" below before pointing it at
 real money.
@@ -75,14 +76,15 @@ The second command should print JSON with `"passed": true` and
 numbers for the placeholder only on the command line, never in a file. Every script needs only Python 3's standard
 library. Commit and push the `risk_rules.json` changes.
 
-**6. Create the five scheduled tasks.** For each file in `prompts/`,
+**6. Create the six scheduled tasks.** For each file in `prompts/`,
 copy its full text into a new scheduled task, replace every
 placeholder, and give the task the Robinhood connector, the Gmail
 connector (if used), and push access to their repo. Schedules (Pacific
-time; prefix with `CRON_TZ=America/Los_Angeles` or convert to UTC): Trade `52 8 * * 1-5`, Midday `22 12 * * 1-5`, Research
-`23 14 * * 0-5`, Weekly review `0 20 * * 6`, Manual check with no
-schedule. Check that no `<...>`
-placeholder is left in any task.
+time; prefix with `CRON_TZ=America/Los_Angeles` or convert to UTC):
+Trade `52 8 * * 1-5`, Hourly check `52 9-11 * * 1-5`, Closing check
+`46 12 * * 1-5`, Research `0 20 * * 0-4`, Weekly review `0 18 * * 0`,
+Manual check with no schedule. Check that no `<...>` placeholder is
+left in any task.
 
 **7. First run.** Start the Research task once by hand. It should push
 a non-empty `pending_proposals.jsonl` and a `reports/<date>.md` with a
@@ -139,17 +141,21 @@ nervous. Here's what actually stands between a thesis and an order:
 Trading runs as **two separate phases, on two separate schedules** — a
 full trading day's closing data feeds the thesis, and a fresh opening
 price is used for the actual order, rather than trading on a stale
-overnight price. Two more runs guard held positions in between: a
-scheduled midday check, and a manual check you can start at any time.
+overnight price. During the day, hourly checks and a closing check
+re-run the stops, sell on thesis-breaking news, and retry buys that were
+skipped only for price, slots, or cash; a manual check can run the full
+Trade cycle at any time.
 
 ### A trading day
 
 ```mermaid
 flowchart LR
-    B["Trade<br/>~8:50am PT<br/>sells, then buys"] --> M["Midday check<br/>~12:20pm PT<br/>stop-loss / take-profit only"]
-    M --> A["Research<br/>~2:25pm PT<br/>screen & thesis, no orders"]
+    B["Trade<br/>~8:52am PT<br/>sells, then buys"] --> HC["Hourly checks<br/>~9:52, 10:52, 11:52am PT<br/>stops, news exits, buy retries"]
+    HC --> C["Closing check<br/>~12:46pm PT<br/>same, plus the day's summary"]
+    C --> A["Research<br/>~8pm PT, Sun–Thu<br/>screen & thesis, no orders"]
     A -- "pending_proposals.jsonl" --> B2["Next morning's Trade run"]
     H(["Manual check<br/>any time, started by hand"]) -.-> X["Same as the Trade run, right now<br/>market closed = analysis only"]
+    W(["Weekly review<br/>Sunday ~6pm PT"]) -.-> G["performance_guard.json<br/>read by the next Trade run"]
 ```
 
 Every run is a fresh cloud session: it clones this repo, follows its
@@ -166,17 +172,18 @@ graph TD
     P --> MAN[Manual check: Trade run on demand]
     RR[risk_rules.json] -- thresholds --> S[scripts/*.py deterministic risk math]
     S -- JSON results, read verbatim --> B
-    S -- stop-loss / take-profit only --> MID[Midday check]
+    S -- stops, take-profit, buy retries --> HC[Hourly and closing checks]
     S --> MAN
     RH -- fresh prices / positions --> B
-    RH -- fresh prices / positions --> MID
+    RH -- fresh prices / positions / news --> HC
     RH -- fresh prices / positions --> MAN
     B -- dry_run order, or gated live order --> PP[paper_portfolio.json / Robinhood]
-    MID -- sells only --> PP
+    HC -- sells, news exits, buy retries --> PP
     MAN -- market open only --> PP
     B -- every decision logged --> L[trade_log.jsonl]
-    MID -- every decision logged --> L
+    HC -- every decision logged --> L
     MAN -- every decision logged --> L
+    L -- only the lines each run needs, via log_query.py --> HC
     B -- SPY / QQQ comparison --> BM[benchmark.json]
     L -- bilingual recap --> REP[reports/date.md + trade_log_recent.md]
 ```
@@ -184,10 +191,11 @@ graph TD
 Only one step is a judgment call — the Research thesis. Every filter,
 ranking, and size is a deterministic script.
 
-**Research — screen and write a thesis** (Steps 1–3, ~4:25pm Central
-weekdays and Sunday, so weekend news reaches Monday's proposals; it also
-runs by hand on any day, using the last session's data; spec
-`RESEARCH_TASK.md`). Places no orders.
+**Research — screen and write a thesis** (Steps 1–3, ~8pm Pacific
+Sunday through Thursday, after the day's earnings reports are out; the
+Sunday run brings the weekend's news into Monday's proposals, so there
+is no Friday run; it also runs by hand on any day, using the last
+session's data; spec `RESEARCH_TASK.md`). Places no orders.
 
 1. **Universe.** Start with your watchlist (up to
    `universe.watchlist_max_candidates`), plus up to
@@ -207,7 +215,7 @@ runs by hand on any day, using the last session's data; spec
    percent below the 52-week high. This is the stock selection.
 
 **Trade — re-verify, enforce the rules, place orders** (Steps 4–9,
-around 9:00am Pacific weekdays, when you can approve orders in the
+around 8:52am Pacific weekdays, when you can approve orders in the
 Robinhood app; spec `TRADE_TASK.md`). Decides which `long`
 candidates are bought:
 
@@ -221,7 +229,8 @@ candidates are bought:
   run also searches for news since the Research run's thesis (overnight earnings,
   downgrades, legal or regulatory news): a buy is dropped if the news
   breaks its thesis, and bad news on a held position is flagged at the
-  top of the report (it never sells by itself). Stops
+  top of the report (this run never sells on news by itself; the hourly
+  checks can, after a sharp move). Stops
   (`stop_loss.py`) are set from the conviction at entry: a multiple of
   ATR, placed under support when that fits, ratcheting up only, and
   never more than a 20% loss.
@@ -267,7 +276,8 @@ the cash buffer holds. Had it opened at $42 — 5% above the thesis price,
 over the `entry_price_gap.max_pct` limit — the buy would be skipped that
 cycle.
 
-**Weekly review** (Saturday evening Pacific; spec `REVIEW_TASK.md`).
+**Weekly review** (Sunday ~6pm Pacific, before the Sunday Research
+run; spec `REVIEW_TASK.md`).
 Report-only. Turns the week's fills into closed trades and reports win
 rate, average return, and P&L by conviction tier, buy type, and exit
 reason, how often each rule fired, how order approvals went (including
@@ -280,10 +290,23 @@ average return below zero) gets half size on new entries and top-ups in the
 following week's runs, until it recovers. The guard can only reduce
 size, never raise it.
 
-**Midday risk check** (weekdays around 12:20pm Pacific; spec
-`MIDDAY_TASK.md`). Re-checks held positions against the stop-loss and
-take-profit rules only, so a sharp intraday move is handled the same day
-instead of the next morning. It never buys.
+**Hourly and closing checks** (weekdays around 9:52, 10:52, and
+11:52am, plus a closing check around 12:46pm Pacific; spec
+`HOURLY_TASK.md`). Each check:
+- re-runs the stop-loss and take-profit rules on held positions, reusing
+  the morning's ATR and support;
+- searches the news when a position falls 4% from yesterday's close or
+  moves 2.5% since the last check, and sells the whole position
+  (`news_exit`) if company news breaks its thesis;
+- warns when SPY falls 2% or QQQ 2.5% (information only);
+- retries today's buys that were skipped only for price, slots, or cash,
+  or that you declined, through every buy gate again, at most one filled
+  buy per stock per day;
+- resubmits a stop-loss, take-profit, or news-exit sell you declined
+  while its rule still fires.
+They never trade the core sleeve, run trims, or buy anything the morning
+run didn't already approve on its thesis. The closing check adds the
+day's summary. Every order still waits for your approval in the app.
 
 **Manual check** (no schedule, started by hand; spec `MANUAL_TASK.md`).
 Runs the full Trade cycle immediately on the current proposals. While
@@ -314,7 +337,7 @@ account and treats it as a standalone account: it never reads or
 considers holdings or activity in any other account, and no account
 number is ever stored in this repo.
 
-All five runs are designed as cloud-hosted agent sessions,
+All six runs are designed as cloud-hosted agent sessions,
 independent of any local machine — each run clones this repo fresh and
 commits/pushes its results back to `main`, so the repo itself is the
 persistent state, not local disk. (Running locally instead works too,
@@ -325,9 +348,10 @@ scheduled time.)
 
 - `AGENTS.md` — short instructions for AI agents (setup, scheduled
   runs, changes); `CLAUDE.md` points Claude sessions to it.
-- `prompts/` — the five scheduled-task prompts (`research.md`,
-  `trade.md`, `midday.md`, `manual.md`, `review.md`) with placeholders for your
-  account number, email, and repo. See "Run prompts" below.
+- `prompts/` — the six scheduled-task prompts (`research.md`,
+  `trade.md`, `hourly.md`, `closing.md`, `manual.md`, `review.md`) with
+  placeholders for your account number, email, and repo. See "Run
+  prompts" below.
 - `risk_rules.json` — the hard, mechanical limits (position sizing, stop-
   loss, loss limits, universe filters, execution mode, wash-sale guard).
   Nothing in this system should be able to override these. Several
@@ -364,6 +388,12 @@ scheduled time.)
     rule-fire counts, and approval outcomes (report-only).
   - `position_sizing.py` — the sizing above, plus concurrency and
     cash-buffer checks, compounding running totals down the ranked list.
+  - `intraday_triggers.py` — which held positions moved enough for a
+    news check, and whether the market is selling off (hourly checks).
+  - `log_query.py` — answers each run's questions about
+    `trade_log.jsonl` (holding-period history, retry candidates, pending
+    orders, decided proposals) so no run has to read the whole log,
+    which grows every day.
 
   Each takes plain CLI args, prints one JSON object, and is meant to be
   read from directly rather than re-derived — see `TRADE_TASK.md`
@@ -373,9 +403,11 @@ scheduled time.)
   in Step 7).
 - `scripts/paper_portfolio.py` — the dry-run paper ledger and the
   SPY/QQQ benchmark (`paper_portfolio.json`, `benchmark.json`).
-- `RESEARCH_TASK.md` / `TRADE_TASK.md` / `MIDDAY_TASK.md` /
-  `MANUAL_TASK.md` / `REVIEW_TASK.md` — the spec each run follows. The manual check reuses
-  the Trade run's steps and lists only its differences.
+- `RESEARCH_TASK.md` / `TRADE_TASK.md` / `HOURLY_TASK.md` /
+  `MANUAL_TASK.md` / `REVIEW_TASK.md` — the spec each run follows.
+  `HOURLY_TASK.md` serves both the hourly and closing checks and is
+  self-contained; the manual check reuses the Trade run's steps and lists
+  only its differences.
 - `reports/<date>.md` — the bilingual (English/Chinese) daily record;
   every run that day appends its own section.
 - `CLAUDE.md` — standing notes for Claude sessions in this repo (commit
@@ -462,11 +494,11 @@ in Example output.
    `wash_sale_avoidance.linked_accounts`: the real account number lives
    only in the scheduled-task prompts, never in this repo. Read every
    threshold (see Configuration) and commit any changes.
-6. **Create the five scheduled tasks** from `prompts/`, filling in the
+6. **Create the six scheduled tasks** from `prompts/`, filling in the
    placeholders, on the schedules in "Running it" below.
 7. **Start in dry run.** A fresh copy ships with `execution.mode` set to
    `"dry_run"`. Run the Research task once by hand, then let the Trade
-   task run on its schedule. After each cycle, read
+   task and the checks run on their schedules. After each cycle, read
    `reports/<date>.md`, `trade_log_recent.md`, and `trade_log.jsonl`,
    especially rejected candidates, stop-loss triggers, and the
    benchmark.
@@ -503,6 +535,7 @@ explaining it. The main settings and their defaults:
 | `earnings_hold` | 5 days, sell 50% of low | pre-earnings flag window and trim for held positions |
 | `concentration_report.flag_sector_pct` | 50% | sector share that gets flagged in the report (never a cap) |
 | `performance_guard` | 10 closed positions / 60 days, <35% wins and <0% avg → ×0.5 | tighten-only sizing for a buy type or tier the weekly review finds failing |
+| `intraday_checks` | news check at −4% from close or ±2.5% since the last check; market alert at SPY −2% / QQQ −2.5% | hourly and closing checks: news exits, resubmitting declined sells, buy retries (one filled buy per stock per day) |
 | `cadence.news_search_budget_per_cycle` | `30` | news searches per Research run |
 
 The sizing is tuned for roughly $500 to $1,500. Under about $500, 6
@@ -512,21 +545,23 @@ riskiest change you can make; do it deliberately and in dry run first.
 
 ## Running it
 
-Three schedules fire on weekdays, the Research run also runs on Sunday,
-the weekly review runs on Saturday, and the manual check has no schedule. Each is a fresh cloud session that clones this repo, follows
-its spec, and pushes results back to `main` (the repo itself is the
-persistent state):
+The Trade run, the hourly checks, and the closing check fire on
+weekdays; the Research run runs Sunday through Thursday evenings; the
+weekly review runs on Sunday; and the manual check has no schedule. Each
+is a fresh cloud session that clones this repo, follows its spec, and
+pushes results back to `main` (the repo itself is the persistent state):
 
 | Run | When (Pacific) | Spec | What it does |
 |---|---|---|---|
-| Trade | ~8:50am | `TRADE_TASK.md` | risk rules, sells, then buys |
-| Midday check | ~12:20pm | `MIDDAY_TASK.md` | stop-loss / take-profit only, never buys |
-| Research | ~2:25pm, also Sunday | `RESEARCH_TASK.md` | screening and theses, no orders |
-| Weekly review | ~8pm Saturday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
+| Trade | ~8:52am | `TRADE_TASK.md` | risk rules, sells, then buys |
+| Hourly check | ~9:52, 10:52, 11:52am | `HOURLY_TASK.md` | stops, take-profit, news exits, buy retries |
+| Closing check | ~12:46pm | `HOURLY_TASK.md` | the same, plus the day's summary |
+| Research | ~8pm Sunday–Thursday | `RESEARCH_TASK.md` | screening and theses, no orders |
+| Weekly review | ~6pm Sunday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
 | Manual check | any time, by hand | `MANUAL_TASK.md` | Trade run right now; analysis only when the market is closed |
 
 - **Recommended: Claude Code's own scheduled cloud tasks.** Create one
-  task per run above: four on their schedules, and the manual
+  task per run above: five on their schedules, and the manual
   check with no schedule, so it only runs when you start it. Point each
   at **your copy** from Setup, not this repo. This runs independent of
   any machine being on — the actual point of "fully automated."
@@ -542,8 +577,9 @@ persistent state):
 
 ### Run prompts
 
-Ready-made prompts for the five scheduled tasks are in `prompts/`
-(`research.md`, `trade.md`, `midday.md`, `manual.md`, `review.md`). Copy each one
+Ready-made prompts for the six scheduled tasks are in `prompts/`
+(`research.md`, `trade.md`, `hourly.md`, `closing.md`, `manual.md`,
+`review.md`). Copy each one
 into its scheduled task and fill in the placeholders there — never in
 this repo, because the filled-in prompts carry your account number:
 
@@ -564,9 +600,9 @@ Robinhood app; with approval off, the runs submit nothing.
 
 Suggested schedules (cron in Pacific time, so prefix each with
 `CRON_TZ=America/Los_Angeles` if your scheduler supports it, or convert
-to UTC): Trade `52 8 * * 1-5`, Midday
-`22 12 * * 1-5`, Research `23 14 * * 0-5`, Weekly review `0 20 * * 6`,
-Manual check with no schedule.
+to UTC): Trade `52 8 * * 1-5`, Hourly check `52 9-11 * * 1-5`,
+Closing check `46 12 * * 1-5`, Research `0 20 * * 0-4`, Weekly review
+`0 18 * * 0`, Manual check with no schedule.
 
 ### Usage rules
 
@@ -596,14 +632,16 @@ flowchart TD
 - **The risk rules decide.** No thesis, however strong, overrides a
   stop-loss, the buy gate, or a sizing limit, and no run ever changes
   `risk_rules.json`.
-- **Sells before buys.** The midday check only sells; the Trade run and the
-  manual check run all sells before any buy.
+- **Sells before buys.** Every run submits its sells before any buy.
 - **One decision per proposal.** A proposal is decided once, by
   whichever run reaches it first. Later runs skip it, so a manual check
-  and the next Trade run never buy the same thing twice.
+  and the next Trade run never buy the same thing twice. The one
+  exception: a buy skipped only for price, slots, or cash, or one you
+  declined, may be retried later the same day by the hourly and closing
+  checks (or a manual check), at most one filled buy per stock per day.
 - **Dry-run cycles come only from the Trade run.** Only a scheduled Trade run
-  writes `cycle_summary`. Midday and manual checks never move the
-  account closer to going live.
+  writes `cycle_summary`. Hourly, closing, and manual checks never move
+  the account closer to going live.
 - **Going live is your call, made by hand.** It needs
   `execution.mode` set to `"live"` in `risk_rules.json` after at least
   `dry_run_min_cycles_before_live` Trade cycles, and trade approval on in
@@ -687,9 +725,15 @@ only that account.
 account's current value, so they grow with deposits. The benchmark
 counts deposits as new money invested in SPY/QQQ, not as gains.
 
-**What about market holidays?** The Trade and Midday runs write a short
-"Market closed" note, email it, and do nothing else. The Research run
-still runs, using the last session's data.
+**What about market holidays?** The Trade run and the hourly and
+closing checks write a short "Market closed" note, email it, and do
+nothing else (on an early-close day, the checks after the close do the
+same). The Research run still runs, using the last session's data.
+
+**Will so many runs get expensive?** The hourly and closing checks reuse
+the morning's technicals and read the log through `log_query.py`, so
+each one is short. Research, the most expensive run, runs five evenings
+a week.
 
 **Why are times in the logs in Central time?** The specs stamp every
 log line in `America/Chicago`, the market's own time zone. The

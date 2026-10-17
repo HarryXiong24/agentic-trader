@@ -2,8 +2,9 @@
 
 _Part of agentic-trader. MIT License._
 
-Runs once a week, Saturday evening Pacific, after the trading week has
-closed. It measures how the strategy actually performed: win rate,
+Runs once a week, Sunday at 6pm Pacific, after the trading week has
+closed and before the Sunday Research run, so the guard it writes is in
+place for Monday's Trade run. It measures how the strategy actually performed: win rate,
 average return, and P&L by conviction tier, buy type, and exit reason;
 how often each rule fired; how order approvals went; and the result
 against SPY and QQQ. The point is evidence for tuning `risk_rules.json`
@@ -19,10 +20,13 @@ reads; see Step 3).
 ## Step 1 — Dates and state
 
 Get today's real date in America/Chicago via Bash. `since` is the Monday
-of the week that just ended (for a Saturday run, five days ago). Read
-`risk_rules.json` (for `execution.mode`) and `trade_log.jsonl`. If
-`trade_log.jsonl` is empty, write a short section saying there is no
-history yet, then skip to Step 4.
+of the week that just ended (for a Sunday run, six days ago). Read
+`risk_rules.json` (for `execution.mode`). Don't read `trade_log.jsonl`
+whole: `scripts/performance_review.py` reads it for you, its first
+line (`head -1 trade_log.jsonl`) gives the earliest `date`, and
+`scripts/log_query.py query` returns any specific lines you want to
+quote. If `trade_log.jsonl` is empty, write a short section saying
+there is no history yet, then skip to Step 4.
 
 ## Step 2 — Fills and open positions
 
@@ -74,8 +78,11 @@ missing; never overwrite earlier sections), headed
    conviction tier, by buy type (trend, pullback, ETF, defensive, core),
    and by exit reason. Show manual trades separately from the agent's.
 4. **Rules that fired this week:** stop-losses, take-profits,
-   conviction trims, pre-earnings trims and flags, news alerts, and
-   risk-check passes and rejections.
+   conviction trims, pre-earnings trims and flags, news alerts, news
+   checks after sharp moves and news exits, market sell-off alerts, buy
+   retries, and risk-check passes and rejections. A rule that fires again
+   on the same position the same day (for example a declined stop-loss
+   that is resubmitted at each check) counts once.
 5. **Approvals:** orders submitted this week and all time, by type, and
    how many were approved, declined or not filled, or still pending.
    Call out any declined stop-loss or other risk sell plainly: the rules

@@ -11,6 +11,9 @@ import datetime
 import json
 import sys
 
+# Price-only blocks: they can clear later the same day, so an intraday check may retry them.
+RETRYABLE_CONDITIONS = {"entry_price_gap", "entry_extension"}
+
 
 def parse_date(s):
     return datetime.date.fromisoformat(s)
@@ -35,7 +38,8 @@ def main():
     p.add_argument("--today", required=True, type=parse_date)
 
     p.add_argument("--last-sell-reason",
-                    choices=["stop_loss", "take_profit", "conviction_trim", "earnings_trim", "exit_existing"])
+                    choices=["stop_loss", "take_profit", "conviction_trim", "earnings_trim", "exit_existing",
+                             "news_exit", "core_exit", "core_rotation", "core_rebalance"])
     p.add_argument("--last-sell-price", type=float)
     p.add_argument("--last-sell-date", type=parse_date)
     p.add_argument("--last-sell-was-gain", choices=["true", "false"],
@@ -134,6 +138,7 @@ def main():
                 if result[name]["blocked"]]
     result["passed"] = len(blocking) == 0
     result["blocking_conditions"] = blocking
+    result["retry_eligible"] = bool(blocking) and set(blocking) <= RETRYABLE_CONDITIONS
     result["action"] = "buy_ok" if result["passed"] else "skip_buy"
 
     print(json.dumps(result))

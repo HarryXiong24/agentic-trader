@@ -73,7 +73,7 @@
       {"gain_pct": 0.30, "sell_fraction_of_position": 0.25},
       {"gain_pct": 0.50, "sell_fraction_of_position": 0.25}
     ],
-    "note": "Tiered partial take-profit, not a single full-exit threshold. Every open position must have this checked on every cycle, independent of any new thesis about the stock — this account is short-term oriented, not buy-and-hold. A good new narrative does not cancel a take-profit tier any more than it cancels a stop-loss. Each tier fires once (per holding period, i.e. since the position last closed to zero) when gain first reaches it, selling sell_fraction_of_position of the position's quantity at that moment — see TRADE_TASK.md Step 5 for the exact mechanics. After all three tiers have fired, the remaining quantity is held long indefinitely; only the stop-loss still applies to it. See sell_reentry_lock for re-entry lock behavior."
+    "note": "Tiered partial take-profit, not a single full-exit threshold. Every open position must have this checked on every cycle, independent of any new thesis about the stock — this account is short-term oriented, not buy-and-hold. A good new narrative does not cancel a take-profit tier any more than it cancels a stop-loss. Each tier fires once (per holding period, i.e. since the position last closed to zero) when gain first reaches it -- a tier whose sell was declined, expired, or skipped fires again on the next run -- selling sell_fraction_of_position of the position's quantity at that moment — see TRADE_TASK.md Step 5 for the exact mechanics. After all three tiers have fired, the remaining quantity is held long indefinitely; only the stop-loss still applies to it. See sell_reentry_lock for re-entry lock behavior."
   },
 
   "conviction_trim": {
@@ -143,7 +143,7 @@
     "max_avg_return_pct": 0.0,
     "size_multiplier": 0.5,
     "max_age_days": 14,
-    "note": "Tighten-only feedback from the weekly review. Each Saturday, scripts/performance_review.py looks at positions fully closed in the last lookback_calendar_days (one per holding period, however many lots or partial sales it had); any buy type (trend, pullback, etf, defensive) or entry-conviction tier with at least min_closed_positions closed positions whose win rate is below max_win_rate AND whose average return is below max_avg_return_pct is written to performance_guard.json. The Trade and manual runs then size new entries and top-ups in a guarded buy type or tier at size_multiplier (applied once, even if both match), multiplied with any other multiplier. It lifts automatically when a later review no longer finds the bucket failing. It can only reduce size (size_multiplier must be between 0 and 1), never forces a sell, never touches the core sleeve, and ignores a performance_guard.json older than max_age_days."
+    "note": "Tighten-only feedback from the weekly review. Each Sunday, scripts/performance_review.py looks at positions fully closed in the last lookback_calendar_days (one per holding period, however many lots or partial sales it had); any buy type (trend, pullback, etf, defensive) or entry-conviction tier with at least min_closed_positions closed positions whose win rate is below max_win_rate AND whose average return is below max_avg_return_pct is written to performance_guard.json. The Trade run, the manual check, and the hourly and closing checks' buy retries then size new entries and top-ups in a guarded buy type or tier at size_multiplier (applied once, even if both match), multiplied with any other multiplier. It lifts automatically when a later review no longer finds the bucket failing. It can only reduce size (size_multiplier must be between 0 and 1), never forces a sell, never touches the core sleeve, and ignores a performance_guard.json older than max_age_days."
   },
 
   "concentration_report": {
@@ -180,7 +180,7 @@
   "stop_alerts": {
     "enabled": true,
     "include_paper_positions": false,
-    "note": "Keeps one Robinhood price_below alert at each held position's stop price (see TRADE_TASK.md Step 5 and MIDDAY_TASK.md), so a sharp intraday drop notifies the human in real time instead of waiting for the next run. Real positions always get alerts; set include_paper_positions to true to also get alerts for dry-run paper positions. The agent only ever touches alert IDs it recorded in agent_alerts.json, and never deletes alerts."
+    "note": "Keeps one Robinhood price_below alert at each held position's stop price (see TRADE_TASK.md Step 5 and HOURLY_TASK.md), so a sharp intraday drop notifies the human in real time instead of waiting for the next run. Real positions always get alerts; set include_paper_positions to true to also get alerts for dry-run paper positions. The agent only ever touches alert IDs it recorded in agent_alerts.json, and never deletes alerts."
   },
 
   "entry_price_gap": {
@@ -205,5 +205,19 @@
     "enabled": true,
     "window_trading_days": 5,
     "note": "Within window_trading_days of a holding period's opening buy, an exit_existing sell requires a new_fact_date after the entry thesis's date -- a thesis can't reverse on facts it already had. Never blocks stop_loss/take_profit/conviction_trim."
+  },
+
+  "intraday_checks": {
+    "enabled": true,
+    "news_trigger_drop_from_prev_close_pct": 0.04,
+    "news_trigger_move_since_last_check_pct": 0.025,
+    "news_exit_enabled": true,
+    "market_drop_alert_pct": {"SPY": 0.02, "QQQ": 0.025},
+    "resubmit_declined_sells": true,
+    "buy_retry": {
+      "enabled": true,
+      "max_filled_buys_per_symbol_per_day": 1
+    },
+    "note": "Used by the hourly and closing checks (HOURLY_TASK.md). A held position down news_trigger_drop_from_prev_close_pct from yesterday's close, or moved news_trigger_move_since_last_check_pct either way since the previous check, gets one news search; if company news breaks the thesis and news_exit_enabled is true, the whole position is submitted for sale (reason news_exit), always for the account owner's approval. A drop of market_drop_alert_pct in SPY or QQQ only adds a warning to the report. With resubmit_declined_sells, a declined stop-loss, take-profit, or news-exit sell is submitted again at the next check. buy_retry lets the checks retry today's candidates the morning run skipped only for price (entry_price_gap, entry_extension), slots, or cash, or whose buy was declined or expired, through every buy gate again, with at most max_filled_buys_per_symbol_per_day filled buys per symbol per day. scripts/intraday_triggers.py applies the price triggers; scripts/log_query.py finds the retry candidates."
   }
 }

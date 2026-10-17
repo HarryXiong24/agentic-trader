@@ -46,8 +46,18 @@ All numbers live in `risk_rules.json`.
    review finds clearly failing (10+ closed positions in 60 days, win rate
    under 35%, average return below zero) gets half size on new entries and top-ups
    until it recovers. It can only reduce size (`performance_guard`, Step 7).
+11. **Intraday checks.** Hourly checks and a closing check (`HOURLY_TASK.md`)
+   re-run the stops and take-profit, sell on thesis-breaking news after a
+   sharp move, warn on a market sell-off, and retry today's buys that were
+   skipped only for price, slots, or cash, or declined (`intraday_checks`).
 
 ## Step 0 — Load state (do this first, every run)
+
+**Reading the log.** `trade_log.jsonl` grows every run, so never read it
+whole. `scripts/log_query.py` answers each question this spec asks of it
+and prints only the relevant lines as JSON: `decided` and `cycles` here,
+`positions` for Step 5, `pending` for Step 6, and `query` (filter by
+`--stage`, `--symbol`, `--since`, `--run`, `--last`) for anything else.
 
 1. Read `risk_rules.json` **fresh** — never cache across runs. Also read
    `performance_guard.json` (written by the weekly review; see Step 7). Its
@@ -63,8 +73,11 @@ All numbers live in `risk_rules.json`.
    candidates — don't error, and don't stop: held positions still get
    Step 5's stop-loss/take-profit checks, and the benchmark and logging
    in Step 9 still run.
-4. Read `trade_log.jsonl` (if present):
+4. From `trade_log.jsonl` (if present), through `scripts/log_query.py`:
    - **Idempotency — key off the proposal's own `date`, not today's.**
+     `python3 scripts/log_query.py decided --proposal-date <the
+     proposals' date> --mode <execution.mode> --today <today>` lists the
+     symbols already decided, applying every rule in this bullet.
      Skip a candidate if `trade_log.jsonl` already has a `risk_check`/
      `order` entry for that symbol with a matching `proposal_date` (not
      the entry's top-level `date`, which reflects when the decision was
@@ -79,7 +92,13 @@ All numbers live in `risk_rules.json`.
      is `"live"` (its `mode` is not `"live"` or `placed` is not true —
      e.g. a run that may only recommend, or one halted because trade
      approval is off), so a later manual run can still execute it.
-   - **Dry-run cycle count**: number of **distinct dates** with a
+     A decision made **today** that is retryable also doesn't count: a
+     `risk_check` rejected only for price, slots, or cash
+     (`"retry_eligible": true`), or a buy the account owner declined or
+     that expired. The hourly and closing checks retry those
+     (`HOURLY_TASK.md`), and so may a manual run the same day.
+   - **Dry-run cycle count** (`python3 scripts/log_query.py cycles
+     --mode dry_run`): number of **distinct dates** with a
      `cycle_summary` entry where `mode: dry_run` — not raw entry count
      (same-day reruns count once). This represents validated days, not
      executions, and must be
@@ -136,8 +155,8 @@ real account as written.
 - top-up: the same, but omit `--conviction` and `--mode`.
 - sell: `python3 scripts/paper_portfolio.py sell --symbol <SYM>
   --quantity <quantity> --price <quote_bid> --reason <stop_loss|
-  take_profit|conviction_trim|earnings_trim|exit_existing|core_exit|
-  core_rotation|core_rebalance> --date <today>`
+  news_exit|take_profit|conviction_trim|earnings_trim|exit_existing|
+  core_exit|core_rotation|core_rebalance> --date <today>`
 Add the script's `realized_pnl_usd` (sells) and `cash_after` to that
 `order` log line. Paper sells skip `review_equity_order` (the real
 account holds no shares, so a review would always fail); log
@@ -188,8 +207,8 @@ Step 6's sell-execution pass — selling is never gated on price or tax,
 with one exception for thesis-driven exits only:
 
 **Early-exit guard** (only if `early_exit_guard.enabled`): find this
-holding period's opening buy in `trade_log.jsonl` (the live `order`
-that took the position from zero). If it was within the last
+holding period's opening buy (`log_query.py positions`, `opening_buy`:
+the live `order` that took the position from zero). If it was within the last
 `early_exit_guard.window_trading_days` trading days, the
 `exit_existing` candidate must carry a `new_fact_date` strictly later
 than that opening buy's `proposal_date`. If it's missing or not later,
@@ -261,14 +280,19 @@ Gather inputs, then let the script decide — do not hand-compute the
 ATR, support, clamp, ratchet, or floor. For each open position (the
 snapshot pulled in Step 4, which carries each position's
 `entry_conviction`, `mode`, `stop_price`, and `trailing_high`; in
-`live` mode, take `entry_conviction` and `mode` from the holding
-period's opening buy `order` line in `trade_log.jsonl`, and the previous
-stop and trailing high from its latest `stop_loss` line):
+`live` mode, run `python3 scripts/log_query.py positions --symbols
+<every held symbol> --mode live --today <today> [--opened
+SYM=<oldest open lot date from get_equity_tax_lots>,...]` once (the
+`--opened` dates start a new holding period for a position that was
+emptied outside the agent; leave it out if that call fails) and take
+`entry_conviction` and `entry_mode` (the holding period's opening buy),
+`previous_stop`, `trailing_high`, and `fired_take_profit_tiers` from
+it):
 - Pull a fresh `get_equity_quotes` price, and run technicals.
-- Check `trade_log.jsonl` for whether any `take_profit` tier has fired
-  for this position's current holding period (same "since quantity
-  last reached zero" scope as the take-profit check below). If one
-  has, keep the running high in the ledger:
+- Check whether any `take_profit` tier has fired for this position's
+  current holding period (`fired_take_profit_tiers`, same definition as
+  the take-profit check below). If one has, keep the running high in
+  the ledger:
   `python3 scripts/paper_portfolio.py set-meta --symbol <SYM> --trailing-high <highest daily close since the holding period's entry>`
   (it only ever rises), and pass the ledger's `trailing_high` below.
 
@@ -302,8 +326,10 @@ review, never blocked by a loss-limit halt, executed in Step 6's
 sell-execution pass. A good thesis never cancels a stop-loss — see
 `risk_rules.json`'s note. Log `"stage": "stop_loss"` with the script's
 `entry_conviction`, `stop_price`, `stop_basis`, `reference_price`,
-`drawdown_from_reference`, `triggered`, and `action`, plus the ATR and
-support used.
+`drawdown_from_reference`, `triggered`, and `action`, plus `atr14` and
+`support_level` (the technicals `support`, logged even when it is above
+the price and therefore not passed to the script). The hourly and
+closing checks reuse these two values instead of fetching bars again.
 
 ### Stop-level price alerts (after the stop-loss check)
 
@@ -333,16 +359,15 @@ action (created / updated / disabled / failed).
 Using the same pull as the stop-loss check (no need to
 call again — average cost, quantity, and fresh price as they stood at
 the start of this step, before any of this cycle's sells execute in
-Step 6), check `trade_log.jsonl` for `"stage": "take_profit"` entries
-for this symbol at each tier's exact `gain_pct`, logged since the
-position's quantity last reached zero (a full exit) — collect the
-`gain_pct` values already fired this holding period. A tier counts as
-fired only if the sell for it actually went out: a sell `order` line for
-the symbol that comes after that `take_profit` line in `trade_log.jsonl`,
-from the same run (same `date` and same `run` value, or both without
-`run`), whose `reason` or `reasons` includes `take_profit`, with
-`"placed": true` in live or `"would_execute": true` without
-`market_closed` in dry run. A tier whose sell was skipped fires again.
+Step 6), take the tiers already fired this holding period from
+`log_query.py positions` (`fired_take_profit_tiers`; the holding period
+starts after the last full exit to zero). A tier counts as fired only if
+its sell went out in the same run and was not declined or left unfilled:
+a sell `order` line for the symbol after that `take_profit` line, in the
+same run, whose `reason` or `reasons` includes `take_profit`, that is
+still pending or filled (`"would_execute": true` without `market_closed`
+in dry run). A tier whose sell was skipped, declined, or expired fires
+again on the next run, so a declined take-profit is submitted again.
 The stop-loss check's trailing-high rule uses this same definition of a
 fired tier.
 
@@ -393,8 +418,9 @@ conviction-tier size, `position_sizing.conviction_pct[<conviction>] ×
 total_value` (never apply the pullback, regime, loss-limit, or
 performance-guard multipliers here: they only size new buys and must
 never turn into a trim),
-look back through this symbol's `risk_check` entries in `trade_log.jsonl`,
-most recent first, and count consecutive entries (not including this
+look back through this symbol's `risk_check` entries
+(`log_query.py query --stage risk_check --symbol <SYM> --since <holding
+period start>`), most recent first, and count consecutive entries (not including this
 cycle, and not crossing back over a prior full exit to zero) where
 `conviction != "high"` (i.e. `"low"` or `"medium"`) and
 `current_position_value` exceeded that cycle's unmultiplied tier size by
@@ -440,7 +466,8 @@ every held position that is not a core-sleeve position, call
 report: its `report.date`, its timing (`am` or `pm`, null if unknown),
 and the trading days from today to that date (0 if today; null if no
 upcoming report is known). Set `already_trimmed` to true only if
-`trade_log.jsonl` has an `order` line for this symbol whose `reason` or
+the log (`log_query.py query --stage order --symbol <SYM> --full`) has
+an `order` line for this symbol whose `reason` or
 `reasons` includes `earnings_trim` with this `report_date`, and that
 order actually went out: `"placed": true` in live (whether the account
 owner then approved or declined it; a declined trim is their decision
@@ -495,13 +522,17 @@ paper ledger's quantity). When take-profit tiers also fire, size the
 conviction trim on what still exceeds the target after them.
 Log one `order` line with `"reasons": [every reason that fired]` and
 `"reason"` set to the first that applies in this order: `stop_loss`,
+`news_exit` (used only by the hourly and closing checks),
 `exit_existing`, `take_profit`, `conviction_trim`, `earnings_trim`
 (carry `report_date` when `earnings_trim` is among them). The per-check
 lines (`stop_loss`, `take_profit`, `conviction_trim`, `earnings_check`)
 are still logged once each. A sell that is skipped (already pending,
 blocked by review, market closed, trade approval off) does not count as
 done for any of its reasons, so take-profit tiers and pre-earnings trims
-fire again on a later run.
+fire again on a later run. A stop-loss or take-profit sell the account
+owner declines is submitted again whenever its rule still fires on a
+later run, including the hourly and closing checks; a declined
+conviction trim, pre-earnings trim, or `exit_existing` sell is not.
 
 1. **Always** call `review_equity_order` first — a preview, never places
    anything.
@@ -547,14 +578,15 @@ fire again on a later run.
      regular hours, so use a market order, buys by `dollar_amount`,
      sells by `quantity`. Right before placing, re-quote; if a buy's
      ask has moved more than `entry_price_gap.max_pct` above the
-     reviewed price, skip it this run.
+     reviewed price, skip it this run and log `"placed": false,
+     "retry_eligible": true` (a later check may retry it).
    - Outside regular hours, place nothing; log
      `"reason": "market closed — live orders only in regular hours"`.
 
    **Pending and duplicate orders (live only).** At the start of every
-   live run, reconcile earlier orders: call `get_trade_approvals` for
-   the approval ids logged with `"order_state": "pending_approval"`
-   and `get_equity_orders` for their order ids, and log each one's
+   live run, reconcile earlier orders: `python3 scripts/log_query.py
+   pending` lists every order still pending; call `get_trade_approvals`
+   for their approval ids and `get_equity_orders` for their order ids, and log each one's
    outcome once as `"stage": "order_update"` (approved and filled,
    declined, or expired). Before placing any order, skip it if the
    same symbol and side already has a pending approval or an open
@@ -576,8 +608,8 @@ failure and skip that candidate. Every `order` entry must carry
 
 **Wash-sale flag on sells (informational only, never blocks a sell):**
 whenever the stop-loss check triggers, a take-profit tier fires, a
-conviction-trim fires, a pre-earnings trim fires, or an
-`exit_existing` sell is processed, and that specific sale realizes a
+conviction-trim fires, a pre-earnings trim fires, a news exit is sold
+(hourly and closing checks), or an `exit_existing` sell is processed, and that specific sale realizes a
 loss (a stop-loss sell is always a loss by definition; check
 take-profit/`exit_existing` case by case against the fill), check the
 same `wash_sale_avoidance.linked_accounts` for a purchase of that symbol
@@ -631,7 +663,7 @@ fixed for the rest of this cycle unless one gets approved below.
 **If `open_slots <= 0`**: no **new** candidate can be approved this
 cycle. Skip the news search and buy gate below for every
 **new**-group candidate — log instead:
-`"stage": "risk_check", "passed": false, "proposal_date": "<candidate's date from pending_proposals.jsonl>", "reason": "no open slots this cycle (X of Y max already held/approved) — skipped without staleness re-check"`.
+`"stage": "risk_check", "passed": false, "retry_eligible": true, "proposal_date": "<candidate's date from pending_proposals.jsonl>", "reason": "no open slots this cycle (X of Y max already held/approved) — skipped without staleness re-check"`.
 **held** group is unaffected.
 
 **If `open_slots > 0`**: **new** group continues normally (slots may
@@ -656,17 +688,19 @@ For every **new** candidate not short-circuited above, and every
 
 ### News since the thesis (every run)
 
-The Research run writes its theses after the close (or on Sunday afternoon), and
-this run buys the next morning, so 16+ hours of news — overnight
+The Research run writes its theses in the evening (Sunday through
+Thursday), and this run buys the next morning, so about 13 hours of
+news — overnight
 earnings, guidance, downgrades, regulatory or legal news, M&A, macro
 shocks — can land in between. Price moves are already caught by the
 buy gate's price-gap check below; this check catches news the price
 has not fully reflected yet. It runs on **every** run, not just Mondays.
 
 **Window.** From the candidate's thesis `date` + `timestamp` (the Research run's
-run time, Central) to now. A Friday proposal checked on Monday therefore
-covers the whole weekend; a Sunday proposal covers Sunday evening
-through this morning.
+run time, Central) to now. A Thursday proposal checked on Friday
+covers Thursday night; a Sunday proposal checked on Monday covers
+Sunday night through this morning (Sunday's run already covered the
+weekend).
 
 **Buy candidates (new entries and top-ups).** Before the price-based
 check, run **one targeted search per candidate** for news inside the
@@ -693,9 +727,11 @@ and major-outlet sources; cite whatever you used).
 
 **Held positions (alert only).** For each open position that is not
 already a buy candidate above, run one search for news inside the same
-window (since the last Research run). This never sells anything by
-itself — stops, take-profit, and the Research run's `exit_existing` stay the
-only sell paths. If something is materially negative for the position
+window (since the last Research run). In this run it never sells
+anything by itself — stops, take-profit, and the Research run's
+`exit_existing` are this run's sell paths; the hourly and closing checks
+can also sell on thesis-breaking news after a sharp move (`news_exit`,
+`HOURLY_TASK.md`). If something is materially negative for the position
 (an earnings miss, guidance cut, downgrade, investigation, and the
 like), log `"stage": "news_alert", "symbol": "<SYM>", "summary": "<one line>", "sources": [...]`,
 put it near the top of the report and the email, and mention it in the
@@ -708,7 +744,7 @@ held position, note "news check failed" in the report.
 ### Buy gate (every day)
 
 **Buys only — new entries and top-ups; never applies to
-stop_loss/take_profit/conviction_trim/earnings_trim/exit_existing sells, which are
+stop_loss/news_exit/take_profit/conviction_trim/earnings_trim/exit_existing sells, which are
 never gated on price or tax considerations.** One script call answers
 every independent, per-symbol condition that can block this candidate;
 `position_sizing.py`'s slot/cash allocation across the whole candidate
@@ -734,9 +770,9 @@ gap, average, or lock condition:**
   dates of any closing trade realizing a negative gain, as
   `--loss-sale-dates <comma-separated ISO dates>` (omit if none
   found). Also pass `--today <today's date, ISO>`.
-- Sell re-entry lock inputs, whenever `trade_log.jsonl` has this
-  symbol's most recent `order` entry as a sell and it actually
-  executed — confirm via `get_equity_positions` that quantity is
+- Sell re-entry lock inputs, whenever this symbol's most recent `order`
+  entry (`log_query.py query --stage order --symbol <SYM> --last 1
+  --full`) is a sell and it actually executed — confirm via `get_equity_positions` that quantity is
   genuinely lower than immediately before that logged sell, or the
   position was fully closed and re-opened since. In `dry_run`,
   check the paper ledger instead: a paper sell does reduce the paper
@@ -788,9 +824,12 @@ to run — buy skipped this cycle, verify manually"`.
 strong the thesis still reads — mechanical, not a judgment call, same
 as a stop-loss. The candidate isn't blacklisted, just re-evaluated
 fresh on the next Research run (or, for the re-entry lock, once its own
-clearing condition is met). Log one `"stage": "risk_check", "passed":
-false, "proposal_date": "<candidate's date>"` line per entry in
-`blocking_conditions`, using the matching reason text:
+clearing condition is met). When the only blocks are price-based
+(`entry_price_gap`, `entry_extension`), the script's `retry_eligible`
+is true and the hourly and closing checks retry it later today. Log one
+`"stage": "risk_check", "passed": false, "retry_eligible": <the
+script's retry_eligible>, "proposal_date": "<candidate's date>"` line
+per entry in `blocking_conditions`, using the matching reason text:
 - `entry_price_gap`: `"reason": "price gapped <gap_pct>% above
   thesis-time price ($<thesis-price> -> $<fresh-ask>), exceeds
   entry_price_gap.max_pct (<threshold>) -- buy skipped this cycle"`
@@ -847,7 +886,8 @@ its `entries_halted` means a **severe breach**.
 - **Severe breach**: halt new entries, top-ups, and core buys this run
   (pass `--entries-halted` to sizing below).
 - **Soft breach** (not severe) today, or a `loss_limit_check` line with
-  `"soft_breach": true` in `trade_log.jsonl` on any of the previous
+  `"soft_breach": true` (`log_query.py query --stage loss_limit_check
+  --since <date>`) on any of the previous
   `loss_limits.soft_breach_trading_days - 1` trading days: buying
   continues at reduced size — pass
   `--size-multiplier <loss_limits.soft_breach_size_multiplier>` to
@@ -958,7 +998,9 @@ failed to run — no orders attempted this cycle, verify manually"` for
 each — rather than falling back to manual computation.
 
 For each candidate, log `"stage": "risk_check"` with that candidate's
-`results` entry fields verbatim.
+`results` entry fields verbatim, including `blocking` and
+`retry_eligible` on a rejection (true when only slots or cash blocked
+it, so a later check can retry it).
 
 Every `risk_check` entry must include `proposal_date` (copied from the
 candidate's `"date"` in `pending_proposals.jsonl` — Step 0's idempotency
@@ -997,10 +1039,14 @@ evaluations), and `order` stages, matching the shape already in
 
 **Required fields** (the weekly review reads these; examples of each are
 in `trade_log_template.jsonl`):
+- `stop_loss`: the script's fields plus `atr14` and `support_level`.
+- `risk_check` rejections: `retry_eligible` whenever the script that
+  rejected the candidate returned it, and on the capacity short-circuit.
 - Buy `order`: `symbol`, `"action": "buy"`, `mode`, `conviction`,
   `entry_mode` (`trend`, `pullback`, `etf`, `defensive`, or `core`),
   `dollar_amount`, `placed` (live) or `would_execute` (dry run),
-  `approval_id` and `order_id` when known, `order_state`, `proposal_date`.
+  `approval_id` and `order_id` when known, `order_state`, `proposal_date`,
+  and `"retry": true` on a buy retried by an hourly or closing check.
 - Sell `order`: `symbol`, `"action": "sell"`, `mode`, `quantity`,
   `reason`, `reasons`, `placed` or `would_execute`, `approval_id` and
   `order_id` when known, `order_state`, and `report_date` for an
@@ -1121,8 +1167,9 @@ stalling the run with real fills never pushed.
 
 ### Report, email, and notification (every run)
 
-The Trade run, the midday check, and the manual check all finish with the
-same three outputs, on **every** run — including runs with no trades, a
+The Trade run and the manual check (and the hourly and closing checks,
+which follow `HOURLY_TASK.md`) all finish with the same three outputs,
+on **every** run — including runs with no trades, a
 manual run while the market is closed, and a market holiday:
 
 1. **Bilingual Markdown on GitHub.** The run's bilingual section is
@@ -1194,5 +1241,5 @@ check, and an appended recap).
   what failed.
 - The wash-sale guard (Step 7's buy gate) only ever blocks a buy. It
   must never block, delay, or resize a
-  stop_loss/take_profit/conviction_trim/earnings_trim/exit_existing sell — a tax
+  stop_loss/news_exit/take_profit/conviction_trim/earnings_trim/exit_existing sell — a tax
   outcome never overrides risk management.

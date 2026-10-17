@@ -22,7 +22,7 @@ TZ='America/Chicago' date +'%A'
 TZ='America/Chicago' date +'%H:%M:%S'
 Use the date as 'date' and the time (time-of-day only) as 'timestamp' on every trade_log.jsonl line. The day of week only labels the news check's window in the report; the news-since-thesis check runs on every run.
 
-Read risk_rules.json, pending_proposals.jsonl, trade_log.jsonl, benchmark.json, agent_alerts.json, performance_guard.json, and (in dry_run only) paper_portfolio.json fresh from this checkout. Never change any value in risk_rules.json. Note in the summary how old the proposals are (their date).
+Read risk_rules.json, pending_proposals.jsonl, benchmark.json, agent_alerts.json, performance_guard.json, and (in dry_run only) paper_portfolio.json fresh from this checkout, and query trade_log.jsonl only through scripts/log_query.py as TRADE_TASK.md says (never read it whole). Never change any value in risk_rules.json. Note in the summary how old the proposals are (their date).
 
 Privacy: before committing, run grep -rnE '<ACCOUNT_NUMBER_PATTERN>' --exclude-dir=.git . and remove any match. Never put an account number in a commit message.
 

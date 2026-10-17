@@ -53,12 +53,16 @@ at the next open.
 4. **Idempotency is unchanged.** A proposal already decided by an
    earlier run (matching `proposal_date`) is skipped, so a manual run
    never buys the same proposal twice, and the next scheduled Trade run
-   skips anything a manual run already decided.
+   skips anything a manual run already decided. As in `TRADE_TASK.md`
+   Step 0, a decision made today that is retryable (rejected only for
+   price, slots, or cash, or a buy that was declined or expired) is not
+   counted as decided, so a manual run can retry it too.
 5. **Append, never overwrite, the recap.** Append a
    `Manual Check / 手动检查 (<HH:mm> CT)` section to
    `trade_log_recent.md`, and the same section to
    `reports/<today's date>.md`, in the bilingual format. Earlier
-   sections from the Trade run or the midday check stay intact.
+   sections from the Trade run or the hourly and closing checks stay
+   intact.
 6. **Commit message:** `Manual check <date> <timestamp>`. Everything
    else about saving (files added, privacy grep, push and retry rules,
    no force-push) follows `TRADE_TASK.md`'s "Saving to the repo".

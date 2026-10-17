@@ -17,5 +17,5 @@ committer as Claude:
 git commit --author="Your Name <you@example.com>" -m "..."
 ```
 
-Scheduled runs (Research, Trade, midday check, manual check) commit as
-Claude with no `--author`.
+Scheduled runs (Research, Trade, hourly and closing checks, weekly
+review, manual check) commit as Claude with no `--author`.

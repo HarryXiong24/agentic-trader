@@ -24,7 +24,7 @@ Use the date as 'date' and the time (time-of-day only) as 'timestamp' on every t
 
 If the market is closed today (US market holiday), run no checks and write nothing to trade_log.jsonl, but still append a short bilingual "Market closed / 休市" section to reports/<today's date>.md, commit it as "Trade run <date>: market closed", push, and then send the email and the notification below.
 
-Read risk_rules.json, pending_proposals.jsonl, trade_log.jsonl, benchmark.json, agent_alerts.json, performance_guard.json, and (in dry_run only) paper_portfolio.json fresh from this checkout every run. Never change any value in risk_rules.json.
+Read risk_rules.json, pending_proposals.jsonl, benchmark.json, agent_alerts.json, performance_guard.json, and (in dry_run only) paper_portfolio.json fresh from this checkout every run, and query trade_log.jsonl only through scripts/log_query.py as TRADE_TASK.md says (never read it whole). Never change any value in risk_rules.json.
 
 Follow the spec's steps including the idempotency rule (key off each candidate's own proposal_date), the dry-run cycle count rule, and the priority/tiebreak rules. Append every decision to trade_log.jsonl, regenerate trade_log_recent.md in the bilingual format (including the Benchmark section), and append the bilingual Trade section to reports/<today's date>.md.
 
