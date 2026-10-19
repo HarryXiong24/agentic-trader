@@ -7,7 +7,7 @@ Trade run and the close:
 
 | Run | Time (Pacific) | `run` value | Report heading |
 |---|---|---|---|
-| Hourly check | ~9:52, 10:52, 11:52am | `"hourly"` | `Hourly Check / 盘中检查` |
+| Hourly check | ~10:52am | `"hourly"` | `Hourly Check / 盘中检查` |
 | Closing check | ~12:46pm | `"closing"` | `Closing Check / 收盘检查` |
 
 The run prompt says which one this is. Both do the same steps; the

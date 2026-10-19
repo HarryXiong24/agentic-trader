@@ -81,7 +81,7 @@ copy its full text into a new scheduled task, replace every
 placeholder, and give the task the Robinhood connector, the Gmail
 connector (if used), and push access to their repo. Schedules (Pacific
 time; prefix with `CRON_TZ=America/Los_Angeles` or convert to UTC):
-Trade `52 8 * * 1-5`, Hourly check `52 9-11 * * 1-5`, Closing check
+Trade `52 8 * * 1-5`, Hourly check `52 10 * * 1-5`, Closing check
 `46 12 * * 1-5`, Research `0 20 * * 0-4`, Weekly review `0 18 * * 0`,
 Manual check with no schedule. Check that no `<...>` placeholder is
 left in any task.
@@ -141,7 +141,7 @@ nervous. Here's what actually stands between a thesis and an order:
 Trading runs as **two separate phases, on two separate schedules** — a
 full trading day's closing data feeds the thesis, and a fresh opening
 price is used for the actual order, rather than trading on a stale
-overnight price. During the day, hourly checks and a closing check
+overnight price. During the day, a midday check (the "hourly check") and a closing check
 re-run the stops, sell on thesis-breaking news, and retry buys that were
 skipped only for price, slots, or cash; a manual check can run the full
 Trade cycle at any time.
@@ -150,7 +150,7 @@ Trade cycle at any time.
 
 ```mermaid
 flowchart LR
-    B["Trade<br/>~8:52am PT<br/>sells, then buys"] --> HC["Hourly checks<br/>~9:52, 10:52, 11:52am PT<br/>stops, news exits, buy retries"]
+    B["Trade<br/>~8:52am PT<br/>sells, then buys"] --> HC["Hourly check<br/>~10:52am PT<br/>stops, news exits, buy retries"]
     HC --> C["Closing check<br/>~12:46pm PT<br/>same, plus the day's summary"]
     C --> A["Research<br/>~8pm PT, Sun–Thu<br/>screen & thesis, no orders"]
     A -- "pending_proposals.jsonl" --> B2["Next morning's Trade run"]
@@ -290,8 +290,8 @@ average return below zero) gets half size on new entries and top-ups in the
 following week's runs, until it recovers. The guard can only reduce
 size, never raise it.
 
-**Hourly and closing checks** (weekdays around 9:52, 10:52, and
-11:52am, plus a closing check around 12:46pm Pacific; spec
+**Hourly and closing checks** (weekdays: one hourly check around
+10:52am, plus a closing check around 12:46pm Pacific; spec
 `HOURLY_TASK.md`). Each check:
 - re-runs the stop-loss and take-profit rules on held positions, reusing
   the morning's ATR and support;
@@ -545,7 +545,7 @@ riskiest change you can make; do it deliberately and in dry run first.
 
 ## Running it
 
-The Trade run, the hourly checks, and the closing check fire on
+The Trade run, the hourly check, and the closing check fire on
 weekdays; the Research run runs Sunday through Thursday evenings; the
 weekly review runs on Sunday; and the manual check has no schedule. Each
 is a fresh cloud session that clones this repo, follows its spec, and
@@ -554,7 +554,7 @@ pushes results back to `main` (the repo itself is the persistent state):
 | Run | When (Pacific) | Spec | What it does |
 |---|---|---|---|
 | Trade | ~8:52am | `TRADE_TASK.md` | risk rules, sells, then buys |
-| Hourly check | ~9:52, 10:52, 11:52am | `HOURLY_TASK.md` | stops, take-profit, news exits, buy retries |
+| Hourly check | ~10:52am | `HOURLY_TASK.md` | stops, take-profit, news exits, buy retries |
 | Closing check | ~12:46pm | `HOURLY_TASK.md` | the same, plus the day's summary |
 | Research | ~8pm Sunday–Thursday | `RESEARCH_TASK.md` | screening and theses, no orders |
 | Weekly review | ~6pm Sunday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
@@ -600,7 +600,7 @@ Robinhood app; with approval off, the runs submit nothing.
 
 Suggested schedules (cron in Pacific time, so prefix each with
 `CRON_TZ=America/Los_Angeles` if your scheduler supports it, or convert
-to UTC): Trade `52 8 * * 1-5`, Hourly check `52 9-11 * * 1-5`,
+to UTC): Trade `52 8 * * 1-5`, Hourly check `52 10 * * 1-5`,
 Closing check `46 12 * * 1-5`, Research `0 20 * * 0-4`, Weekly review
 `0 18 * * 0`, Manual check with no schedule.
 
