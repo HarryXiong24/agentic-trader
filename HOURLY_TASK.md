@@ -7,8 +7,8 @@ Trade run and the close:
 
 | Run | Time (Pacific) | `run` value | Report heading |
 |---|---|---|---|
-| Hourly check | ~10:52am | `"hourly"` | `Hourly Check / 盘中检查` |
-| Closing check | ~12:46pm | `"closing"` | `Closing Check / 收盘检查` |
+| Hourly check | ~10:50am | `"hourly"` | `Hourly Check / 盘中检查` |
+| Closing check | ~12:50pm | `"closing"` | `Closing Check / 收盘检查` |
 
 The run prompt says which one this is. Both do the same steps; the
 closing check also writes the day's summary (Step 9).
@@ -497,7 +497,7 @@ send at most once.
 
 **Notification, last, every run.** One line under 200 characters, no
 markdown: the English headline, ` | `, then the same in Chinese, for
-example `Hourly 10:52: MU stop hit, sell awaiting your approval; 1 buy retried (AAPL $60) | 盘中 10:52：MU 触发止损，卖单待你批准；重试买入 1 笔（AAPL $60）`.
+example `Hourly 10:50: MU stop hit, sell awaiting your approval; 1 buy retried (AAPL $60) | 盘中 10:50：MU 触发止损，卖单待你批准；重试买入 1 笔（AAPL $60）`.
 Always sent, even if the push or the email failed; then it names what
 failed.
 
