@@ -23,7 +23,7 @@ All numbers live in `risk_rules.json`.
 
 1. **Core sleeve.** About 25% of the account sits in QQQ (or SPY, or
    cash) depending on which is in an uptrend (Step 3, Step 7).
-2. **Up to 8 tactical positions**, sized by conviction (12% / 8% / 5%); new positions under $10 are skipped. While SPY is below its 200-day average, new tactical entries and top-ups are halved (`regime_sizing`).
+2. **Up to `position_sizing.max_concurrent_positions` tactical positions** (8 by default), sized by conviction (12% / 8% / 5%); new positions under $10 are skipped. While SPY is below its 200-day average, new tactical entries and top-ups are halved (`regime_sizing`).
 3. **Quality pullbacks.** Mag 7 names, TSM, ASML, and SMH may be bought below their
    200-day average once they are well off the high and technically
    stabilizing, in two tranches (Step 4).

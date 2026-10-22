@@ -250,7 +250,8 @@ candidates are bought:
   then larger percent below the 52-week high.
 - **Size** (`position_sizing.py`). In ranked order, each candidate is
   bought at its conviction-tier size (high 12%, medium 8%, low 5% of the
-  account; new positions under $10 are skipped) until 8 tactical
+  account; new positions under $10 are skipped) until `max_concurrent_positions`
+  (8 by default) tactical
   positions or the `min_cash_buffer_pct` floor is reached. While SPY is
   below its 200-day average, new tactical entries and top-ups are halved
   (`regime_sizing`; defensive names excepted).
