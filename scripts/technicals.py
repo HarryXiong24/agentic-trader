@@ -15,7 +15,9 @@ figures (missing figures come back null).
 Optional --benchmark-bars: the same format for SPY, to compute 60-day
 relative strength.
 
-Output (one JSON object): moving averages, RSI(14), MACD(12,26,9),
+Output (one JSON object): moving averages (5/20/50/200-day), RSI(2) and
+RSI(14), consecutive down days, the last bar's gap and day change (for
+the dip and earnings setups in scripts/setups.py), MACD(12,26,9),
 ATR(14), nearest support/resistance from swing points, relative volume,
 distance from the 52-week high, 60-day return / relative strength, and
 the stabilization and falling-knife flags used for pullback entries.
@@ -110,7 +112,17 @@ def compute(bars, bench=None):
     price = closes[-1]
     prev = closes[-2]
 
-    sma20, sma50, sma200 = sma(closes, 20), sma(closes, 50), sma(closes, 200)
+    sma5, sma20, sma50, sma200 = sma(closes, 5), sma(closes, 20), sma(closes, 50), sma(closes, 200)
+    rsi2s = rsi_series(closes, 2)
+    down_days = 0
+    for i in range(len(closes) - 1, 0, -1):
+        if closes[i] < closes[i - 1]:
+            down_days += 1
+        else:
+            break
+    last = bars[-1]
+    gap_pct = (last["open"] / prev - 1) if ("open" in last and prev) else None
+    day_change_pct = price / prev - 1 if prev else None
 
     rsis = rsi_series(closes, 14)
     rsi_now = rsis[-1] if rsis else None
@@ -166,6 +178,14 @@ def compute(bars, bench=None):
 
     return {
         "price": r(price, 4),
+        "last_bar_date": bars[-1].get("date"),
+        "previous_close": r(prev, 4),
+        "sma5": r(sma5), "above_sma5": None if sma5 is None else price > sma5,
+        "rsi2": r(rsi2s[-1], 2) if rsi2s else None,
+        "consecutive_down_days": down_days,
+        "gap_pct": r(gap_pct), "day_change_pct": r(day_change_pct),
+        "close_above_open": (price >= last["open"]) if "open" in last else None,
+        "day_low": r(last["low"], 4), "day_high": r(last["high"], 4),
         "sma20": r(sma20), "sma50": r(sma50), "sma200": r(sma200),
         "above_sma20": None if sma20 is None else price > sma20,
         "above_sma50": None if sma50 is None else price > sma50,

@@ -193,6 +193,10 @@ def cmd_buy(a):
         if a.mode:
             pos["mode"] = a.mode
             pos["tranches"] = 1
+        if a.initial_stop is not None:
+            pos["initial_stop"] = round(a.initial_stop, 4)
+        if a.gap_date:
+            pos["gap_date"] = a.gap_date
         ledger["positions"][sym] = pos
     ledger["cash"] = ledger["cash"] - cost
     save(PAPER_FILE, ledger)
@@ -348,7 +352,10 @@ def main():
     s.add_argument("--price", type=float, required=True, help="the quote ask used in the order review")
     s.add_argument("--date", required=True)
     s.add_argument("--conviction", choices=["high", "medium", "low"], help="entry conviction, fixed for the position's life (sets the stop tier)")
-    s.add_argument("--mode", choices=["trend", "pullback", "core", "etf", "defensive"], help="entry mode")
+    s.add_argument("--mode", choices=["trend", "pullback", "core", "etf", "defensive", "dip", "earnings"],
+                   help="entry mode (trend is strategy v1; v2 opens dip and earnings positions)")
+    s.add_argument("--initial-stop", type=float, help="earnings engine: the stop under the gap day's low")
+    s.add_argument("--gap-date", help="earnings engine: the gap day, YYYY-MM-DD")
     s.set_defaults(func=cmd_buy)
 
     s = sub.add_parser("sell")
@@ -356,7 +363,7 @@ def main():
     s.add_argument("--quantity", type=float, required=True)
     s.add_argument("--price", type=float, required=True, help="the current quote bid")
     s.add_argument("--date", required=True)
-    s.add_argument("--reason", required=True, help="stop_loss | news_exit | take_profit | conviction_trim | earnings_trim | exit_existing | core_exit | core_rotation | core_rebalance")
+    s.add_argument("--reason", required=True, help="stop_loss | news_exit | engine_exit | time_stop | take_profit | conviction_trim | earnings_trim | exit_existing | core_exit | core_rotation | core_rebalance")
     s.set_defaults(func=cmd_sell)
 
     s = sub.add_parser("set-meta")

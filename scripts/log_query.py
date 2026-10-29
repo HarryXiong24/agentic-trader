@@ -8,6 +8,7 @@ It only reads files; it never writes anything.
 
 Subcommands (all print one JSON object):
   positions  per held symbol: entry conviction and mode, previous stop and
+             highest close (v2), the earnings initial stop and gap date (v2),
              trailing high, today's ATR/support, the last checked price,
              fired take-profit tiers, and today's sells and buys
   retry      today's buy candidates an intraday check may retry
@@ -30,7 +31,8 @@ import json
 import sys
 
 SUMMARY_STAGES = {"cycle_summary", "midday_summary", "manual_summary", "check_summary"}
-FULL_EXIT_REASONS = {"stop_loss", "exit_existing", "news_exit", "core_exit", "core_rotation"}
+FULL_EXIT_REASONS = {"stop_loss", "exit_existing", "news_exit", "core_exit", "core_rotation",
+                     "engine_exit", "time_stop"}
 TERMINAL_NO_FILL = {"cancelled", "rejected", "failed", "voided", "expired"}
 FILLED_STATES = {"filled", "partially_filled"}
 DROP_KEYS = {"sources", "technicals", "thesis", "thesis_zh", "invalidation_zh",
@@ -224,7 +226,8 @@ def cmd_positions(args, log):
                "opening_buy": None, "previous_stop": None, "trailing_high": None,
                "today_atr14": None, "today_support_level": None, "last_check_price": None,
                "fired_take_profit_tiers": [], "sells_today": [], "buys_today": [],
-               "news_exit_today": None}
+               "news_exit_today": None, "initial_stop": None, "gap_date": None,
+               "highest_close": None, "last_completed_close": None, "entry_date": None}
         if start < len(log):
             rec["holding_period_start"] = {"date": log[start].get("date"),
                                            "timestamp": log[start].get("timestamp")}
@@ -240,11 +243,18 @@ def cmd_positions(args, log):
                 latest_buy = (l, status)
                 if opening is None and status in ("filled", "pending"):
                     opening = (l, status)
+            if st == "stop_reset":
+                # a one-time, owner-requested stop change: earlier stops no longer ratchet this one
+                rec["previous_stop"] = None
             if st == "stop_loss":
                 if l.get("stop_price") is not None:
                     rec["previous_stop"] = l["stop_price"]
                 if l.get("trailing_high") is not None:
                     rec["trailing_high"] = l["trailing_high"]
+                if l.get("highest_close") is not None:
+                    rec["highest_close"] = l["highest_close"]
+                if l.get("date") == args.today and l.get("last_completed_close") is not None:
+                    rec["last_completed_close"] = l["last_completed_close"]
                 if l.get("current_price") is not None:
                     rec["last_check_price"] = {"price": l["current_price"], "date": l.get("date"),
                                                "timestamp": l.get("timestamp"),
@@ -271,6 +281,12 @@ def cmd_positions(args, log):
                                   "confirmed": opening is not None}
             rec["entry_conviction"] = l.get("conviction")
             rec["entry_mode"] = l.get("entry_mode")
+            rec["initial_stop"] = l.get("initial_stop")
+            rec["gap_date"] = l.get("gap_date")
+        # entry_date: when the current position was opened. The account's oldest open lot
+        # (--opened) wins; otherwise the opening buy's date. Never the holding-period
+        # boundary, which can be weeks earlier.
+        rec["entry_date"] = opened.get(sym) or (rec["opening_buy"] or {}).get("date")
         rec["fired_take_profit_tiers"] = fired_tiers(log, sym, start, updates, bidx)
         out[sym] = rec
     print(json.dumps({"mode": args.mode, "today": args.today, "positions": out}))
@@ -303,6 +319,12 @@ def day_states(log, today, mode, updates, max_filled=1):
         st = l.get("stage")
         if st == "risk_check":
             reason = str(l.get("reason") or "")
+            # v2 sizing inputs: keep the latest non-null value seen today, so a later
+            # retry line without them doesn't erase them
+            carry = s.setdefault("v2", {})
+            for k in ("mode", "stop_distance_pct", "sector", "initial_stop", "gap_date"):
+                if l.get(k) is not None:
+                    carry[k] = l[k]
             if l.get("news_check") == "invalidated" or "news since the thesis invalidated" in reason:
                 s["blocked"] = "news invalidated the thesis today"
             if l.get("passed") is False:
@@ -374,10 +396,14 @@ def cmd_retry(args, log):
         tech = thesis.get("technicals") or {}
         eligible.append({
             "symbol": sym, "proposal_date": rc.get("proposal_date"),
-            "morning_group": rc.get("group"), "mode": rc.get("mode"),
+            "morning_group": rc.get("group"), "mode": rc.get("mode") or s.get("v2", {}).get("mode"),
             "conviction": rc.get("conviction"), "etf_conviction": rc.get("etf_conviction"),
             "risk_flags": rc.get("risk_flags"), "pct_below_52wk_high": rc.get("pct_below_52wk_high"),
             "news_check": rc.get("news_check"), "news_note": rc.get("news_note"),
+            "stop_distance_pct": s.get("v2", {}).get("stop_distance_pct"),
+            "sector": s.get("v2", {}).get("sector"),
+            "initial_stop": s.get("v2", {}).get("initial_stop"),
+            "gap_date": s.get("v2", {}).get("gap_date"),
             "last_reason": s["last"],
             "thesis_price": tech.get("price", thesis.get("current_price")),
             "thesis_date": thesis.get("date"), "thesis_timestamp": thesis.get("timestamp"),

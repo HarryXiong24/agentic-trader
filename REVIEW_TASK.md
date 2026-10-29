@@ -47,6 +47,12 @@ there is no history yet, then skip to Step 4.
   `get_equity_quotes` and write a second scratch file of
   `{"symbol", "quantity", "average_cost", "current_price"}` for each
   open position.
+- **Veto shadow prices (`live`).** List the symbols of declined orders
+  (`python3 scripts/log_query.py query --stage order_update --since
+  <earliest date>` lines with `"approval_state": "declined"`), call
+  `get_equity_quotes` for them, and write a third scratch file,
+  `{"SYM": last_trade_price, ...}`. In `dry_run` there are no approvals;
+  skip it.
 - **`dry_run`:** skip `--fills`; the script rebuilds fills from the
   log's dry-run order lines. For open positions, use
   `python3 scripts/paper_portfolio.py snapshot --prices <every paper
@@ -54,7 +60,7 @@ there is no history yet, then skip to Step 4.
 
 ## Step 3 — Run the review
 
-`python3 scripts/performance_review.py --trade-log trade_log.jsonl --since <since> --today <today> [--fills <fills file>] [--positions <positions file>] [--guard-out performance_guard.json --guard-lookback-days <performance_guard.lookback_calendar_days> --guard-min-trades <performance_guard.min_closed_positions> --guard-max-win-rate <performance_guard.max_win_rate> --guard-max-avg-return <performance_guard.max_avg_return_pct> --guard-size-multiplier <performance_guard.size_multiplier>]`
+`python3 scripts/performance_review.py --trade-log trade_log.jsonl --since <since> --today <today> [--fills <fills file>] [--positions <positions file>] [--prices <veto shadow prices file>] [--guard-out performance_guard.json --guard-lookback-days <performance_guard.lookback_calendar_days> --guard-min-trades <performance_guard.min_closed_positions> --guard-max-win-rate <performance_guard.max_win_rate> --guard-max-avg-return <performance_guard.max_avg_return_pct> --guard-size-multiplier <performance_guard.size_multiplier>]`
 
 Pass the `--guard-*` arguments only when `performance_guard.enabled` is
 true; the script then overwrites `performance_guard.json`. When it is
@@ -75,9 +81,14 @@ missing; never overwrite earlier sections), headed
 2. **This week's closed trades:** one line each (symbol, entry and exit
    dates, return, exit reason, conviction and buy type at entry).
 3. **What is working (all time):** win rate, average return, and P&L by
-   conviction tier, by buy type (trend, pullback, ETF, defensive, core),
-   and by exit reason. Show manual trades separately from the agent's.
-4. **Rules that fired this week:** stop-losses, take-profits,
+   conviction tier, by buy type (the v2 engines `dip` and `earnings`,
+   then pullback, ETF, defensive, core, and v1 `trend`), and by exit
+   reason (including `engine_exit` and `time_stop`). Show manual trades
+   separately from the agent's. Say how many closed positions each v2
+   engine has so far; an engine is judged only after about 30 closed
+   trades.
+4. **Rules that fired this week:** stop-losses, engine exits and time
+   stops, take-profits,
    conviction trims, pre-earnings trims and flags, news alerts, news
    checks after sharp moves and news exits, market sell-off alerts, buy
    retries, and risk-check passes and rejections. A rule that fires again
@@ -87,6 +98,14 @@ missing; never overwrite earlier sections), headed
    how many were approved, declined or not filled, or still pending.
    Call out any declined stop-loss or other risk sell plainly: the rules
    only protect the account when their sells go through.
+   **Veto shadow** (`veto_shadow`, when `--prices` was passed): what the
+   declined orders would have done, this week and all time. Declined
+   buys: their hypothetical P&L marked to today (negative means declining
+   helped). Declined sells: the veto effect per chain of repeated
+   declines (positive means declining helped), ending at the price the
+   position was finally sold at, or today's. Give the two totals and the
+   largest rows, plainly and without judging the account owner; they
+   show whether the vetoes are adding or costing money.
 6. **Performance guard:** which buy types or conviction tiers are
    guarded for the coming week (half size on new entries and top-ups), and which
    are close (enough trades but only one of the two conditions met). If

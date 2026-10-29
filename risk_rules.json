@@ -51,12 +51,17 @@
     "min_top_up_pct_of_target": 0.10,
     "min_new_position_usd": 10.00,
     "conviction_pct": {"high": 0.12, "medium": 0.08, "low": 0.05},
+    "risk_per_trade_pct": 0.01,
+    "max_positions_per_sector": 4,
+    "v2_note": "Strategy v2. risk_per_trade_pct caps each new entry so that its loss at the initial stop is about this share of the account: size = min(conviction_pct for its tier, risk_per_trade_pct / stop distance), then the usual multipliers. It can only make a position smaller than its conviction tier, never larger. max_positions_per_sector blocks a new tactical entry that would put more than this many tactical positions in one sector (sectors merged through concentration_report.sector_groups, ETFs through etf_sectors); the core sleeve never counts. Both are applied by scripts/position_sizing.py.",
     "note": "Sized for an account of roughly $500 to $1,500: up to 8 tactical positions, high 12%, medium 8%, low 5% of the account, so single-stock risk stays moderate and cash is left for second tranches. For a small account (under about $500), 6 positions at 15/10/7.5% keeps each position large enough to matter. A new position smaller than min_new_position_usd (after pullback, loss-limit, or regime multipliers) is skipped rather than bought as dust. The core sleeve (SPY/QQQ) is separate and does not count toward max_concurrent_positions. Positions bought under earlier, larger sizes are never force-sold to the new size; conviction_trim trims one that stays overweight once its conviction is no longer high. Revisit when the account passes about $1,500 (e.g. 10 positions at 10/7/4%).",
     "min_top_up_note":"A top-up only fires if the computed buy amount clears max($1.00 broker minimum, min_top_up_usd, min_top_up_pct_of_target x target_size for that candidate's conviction tier). Below that, skip without calling review_equity_order -- a top-up smaller than this doesn't move the position meaningfully, and letting headroom shrink toward zero every cycle otherwise generates a long tail of dust-sized orders as the position converges on target. Applies to top-ups only, never to new-entry sizing."
   },
 
   "stop_loss": {
     "mode": "conviction_tiered_atr",
+    "fixed_pct": 0.15,
+    "mode_note": "mode is conviction_tiered_atr (the tiers below) or fixed_pct (a flat fixed_pct below the reference price for every tactical position; the tiers are then unused). Either way the ratchet, the trailing stop, the close-based trigger, and hard_floor_pct apply, and an earnings-engine position starts from its engine stop.",
     "tiers": {
       "high":   {"atr_multiplier": 3.0, "min_pct": 0.08, "max_pct": 0.18},
       "medium": {"atr_multiplier": 2.5, "min_pct": 0.06, "max_pct": 0.15},
@@ -64,6 +69,10 @@
     },
     "support_aware": true,
     "hard_floor_pct": 0.20,
+    "trigger_basis": "daily_close",
+    "intraday_emergency_drop_pct": 0.12,
+    "trailing": {"enabled": true, "activate_after_gain_atr": 1.0, "activate_after_gain_pct_fixed_mode": 0.15, "atr_multiplier": 3.0},
+    "v2_note": "Strategy v2. Stops trigger on the daily close, not on an intraday print: the Trade run and the hourly check compare the latest official close with the stop, and the closing check uses the price a few minutes before the close as that close. During the day a position is sold only on an emergency (the price below the stop and down at least intraday_emergency_drop_pct from yesterday's close) or at the hard floor, which is always checked against the live price. trailing is a chandelier stop: once the highest close since entry is at least activate_after_gain_atr x ATR(14) above the average cost, the stop rises to that highest close minus atr_multiplier x ATR(14) whenever that is higher; like every stop it only ratchets up. When mode is fixed_pct, the trailing stop instead takes over once the highest close is activate_after_gain_pct_fixed_mode above the average cost, so a small early gain never pulls a wide fixed stop up close to the price. An earnings-engine position starts from its engine stop (just under the gap day's low) instead of the tiered ATR stop.",
     "note": "Computed by scripts/stop_loss.py. The tier is the conviction AT ENTRY (recorded in the paper ledger) and never changes; the stop is tier multiplier x ATR(14), clamped to the tier's range, placed just under support when that fits the range; it only ratchets up, never down; and no position may lose more than hard_floor_pct from its average cost. Every open position is checked every run, independent of any new thesis. A good new narrative never cancels a stop-loss."
   },
 
@@ -103,7 +112,33 @@
     "target_pct_of_account": 0.25,
     "rebalance_band_pct": 0.05,
     "candidates_in_order": ["QQQ", "SPY"],
-    "note": "Holds target_pct_of_account in the first candidate whose price is above both its 50- and 200-day averages; if neither qualifies, holds no core position (cash). Rebalances only when the core value drifts more than rebalance_band_pct of total value from target. SPY and QQQ are traded ONLY through the core sleeve, never as tactical positions. A core position exits when its ETF closes below its 200-day average, or at the hard floor."
+    "regime": {"basis": "SPY daily close vs SPY 200-day average", "confirm_closes": 2},
+    "note": "Strategy v2 (scripts/core_regime.py): the sleeve is on while SPY is above its 200-day average and turns off only after regime.confirm_closes daily closes in a row below it, and back on only after as many closes in a row above it; in between the previous state holds, so one close across the line never flips it (the v1 50-day rule flipped four times in nine days). The ETF is QQQ while QQQ has closed above its own 200-day average regime.confirm_closes times in a row, otherwise SPY; a held core ETF is rotated only on the same confirmation. Holds target_pct_of_account and rebalances only when the core value drifts more than rebalance_band_pct of total value from target. SPY and QQQ are traded ONLY through the core sleeve, never as tactical positions. A core position exits when the regime turns off, or at the hard floor."
+  },
+
+  "entry_engines": {
+    "trend_entries_enabled": false,
+    "top_ups": "pullback_second_tranche_only",
+    "dip": {
+      "enabled": true,
+      "requires_above_sma200": true,
+      "min_down_days": 3,
+      "max_rsi2": 10,
+      "max_single_day_drop_pct": 0.08,
+      "exit_close_above_sma": 5,
+      "max_hold_trading_days": 10
+    },
+    "earnings": {
+      "enabled": true,
+      "min_gap_pct": 0.03,
+      "min_rel_volume": 1.5,
+      "require_eps_beat": true,
+      "require_guidance_raised": true,
+      "entry_window_trading_days": 2,
+      "stop_buffer_below_gap_low_pct": 0.005,
+      "max_hold_trading_days": 20
+    },
+    "note": "Strategy v2 (scripts/setups.py). New tactical positions come only from an entry engine, the pullback whitelist (pullback_mode), or the defensive slot; buying a stock just because it is trending up (v1 trend entries) is off. dip: a stock still above its 200-day average that has closed down min_down_days days in a row or has RSI(2) at or below max_rsi2 (a one-day drop larger than max_single_day_drop_pct is news, not a dip, and is skipped); it is sold on the first close above its exit_close_above_sma-day average, after max_hold_trading_days sessions, or at its stop. earnings: post-earnings drift after a report with an EPS beat and raised guidance, where the stock opened at least min_gap_pct above the prior close on at least min_rel_volume x its 20-day average volume and held the gap into the close (still min_gap_pct up, upper half of the day's range); it may be bought within entry_window_trading_days sessions after the gap day, its stop sits stop_buffer_below_gap_low_pct under the gap day's low, and it is sold after max_hold_trading_days sessions or at the stop. Engine exits are reasons engine_exit and time_stop. requires_above_sma200, require_eps_beat, require_guidance_raised, and trend_entries_enabled document fixed parts of v2 (scripts/setups.py and the specs always apply them); changing them has no effect. top_ups: held positions are added to only as a pullback second tranche. Positions opened before v2 keep their mode and are managed by the stops (now close-based with the trailing stop) and take-profit."
   },
 
   "pullback_mode": {
@@ -153,7 +188,7 @@
       "Technology": ["Electronic Technology", "Technology Services"]
     },
     "etf_sectors": {"QQQ": "Technology", "SMH": "Technology", "SPY": "Broad market"},
-    "note": "Information only, never a cap: every Trade and manual run reports each sector's share of the account (scripts/concentration.py) and flags any sector above flag_sector_pct at the top of the report. sector_groups merges Robinhood's fine-grained sector names; etf_sectors labels ETFs, so the core sleeve counts toward the sector it is concentrated in."
+    "note": "The report is information only: the separate cap position_sizing.max_positions_per_sector counts positions per sector with the same merging. every Trade and manual run reports each sector's share of the account (scripts/concentration.py) and flags any sector above flag_sector_pct at the top of the report. sector_groups merges Robinhood's fine-grained sector names; etf_sectors labels ETFs, so the core sleeve counts toward the sector it is concentrated in."
   },
 
   "earnings_hold": {
@@ -218,6 +253,6 @@
       "enabled": true,
       "max_filled_buys_per_symbol_per_day": 1
     },
-    "note": "Used by the hourly and closing checks (HOURLY_TASK.md). A held position down news_trigger_drop_from_prev_close_pct from yesterday's close, or moved news_trigger_move_since_last_check_pct either way since the previous check, gets one news search; if company news breaks the thesis and news_exit_enabled is true, the whole position is submitted for sale (reason news_exit), always for the account owner's approval. A drop of market_drop_alert_pct in SPY or QQQ only adds a warning to the report. With resubmit_declined_sells, a declined stop-loss, take-profit, or news-exit sell is submitted again at the next check. buy_retry lets the checks retry today's candidates the morning run skipped only for price (entry_price_gap, entry_extension), slots, or cash, or whose buy was declined or expired, through every buy gate again, with at most max_filled_buys_per_symbol_per_day filled buys per symbol per day. scripts/intraday_triggers.py applies the price triggers; scripts/log_query.py finds the retry candidates."
+    "note": "Used by the hourly and closing checks (HOURLY_TASK.md). A held position down news_trigger_drop_from_prev_close_pct from yesterday's close, or moved news_trigger_move_since_last_check_pct either way since the previous check, gets one news search; if company news breaks the thesis and news_exit_enabled is true, the whole position is submitted for sale (reason news_exit), always for the account owner's approval. A drop of market_drop_alert_pct in SPY or QQQ only adds a warning to the report. With resubmit_declined_sells, a declined stop-loss, take-profit, or news-exit sell, and in the closing check a declined dip engine exit, is submitted again at the next check while its rule still fires. buy_retry lets the checks retry today's candidates the morning run skipped only for price (entry_price_gap, entry_extension), slots, or cash, or whose buy was declined or expired, through every buy gate again, with at most max_filled_buys_per_symbol_per_day filled buys per symbol per day. scripts/intraday_triggers.py applies the price triggers; scripts/log_query.py finds the retry candidates."
   }
 }

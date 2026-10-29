@@ -22,6 +22,20 @@ and --size-multiplier scales every candidate (e.g. 0.5 after a soft
 loss-limit breach). Both multiply the conviction-tier percentage.
 Multipliers can only reduce size: any value above 1 is treated as 1, and
 a value of 0 or below is an error.
+
+Strategy v2 (both optional, both can only reduce size or block):
+- Risk-based cap (--risk-per-trade-pct, e.g. 0.01): a candidate carries
+  "stop_distance_pct" (entry price to its initial stop, as a fraction).
+  Its base size is min(conviction-tier %, risk-per-trade / stop distance),
+  so no single trade risks more than about risk-per-trade of the account
+  at its stop; the multipliers then apply to that base. Required on every
+  new candidate when the flag is set.
+- Sector cap (--max-positions-per-sector with --sector-counts): a new
+  candidate carries "sector" (already merged through
+  concentration_report.sector_groups); it is blocked with code
+  "sector_cap" when the sector would hold more than the cap. Counts are
+  tactical positions only (never the core sleeve) and compound down the
+  list like slots and cash.
 """
 import argparse
 import json
@@ -57,7 +71,21 @@ def main():
                     help="skip a new entry whose dollar amount is below this (default 0 = no minimum)")
     p.add_argument("--size-multiplier", type=float, default=1.0,
                     help="optional global multiplier on every conviction-tier size (default 1.0)")
+    p.add_argument("--risk-per-trade-pct", type=float,
+                    help="v2: cap each new entry so its loss at the stop is about this share of the account")
+    p.add_argument("--max-positions-per-sector", type=int,
+                    help="v2: block a new entry that would put more than this many tactical positions in one sector")
+    p.add_argument("--sector-counts", default="{}",
+                    help='v2: JSON of current tactical positions per merged sector, e.g. {"Technology": 3}')
     args = p.parse_args()
+    try:
+        sector_counts = {k: int(v) for k, v in json.loads(args.sector_counts).items()}
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
+        print(json.dumps({"error": f"--sector-counts must be a JSON object of integers: {e}"}), file=sys.stderr)
+        sys.exit(1)
+    if args.risk_per_trade_pct is not None and not (0 < args.risk_per_trade_pct <= 0.05):
+        print(json.dumps({"error": "--risk-per-trade-pct must be above 0 and at most 0.05"}), file=sys.stderr)
+        sys.exit(1)
     if args.size_multiplier <= 0:
         print(json.dumps({"error": "--size-multiplier must be above 0"}), file=sys.stderr)
         sys.exit(1)
@@ -87,8 +115,26 @@ def main():
         if cand_multiplier <= 0:
             print(json.dumps({"error": f"size_multiplier for {symbol} must be above 0"}), file=sys.stderr)
             sys.exit(1)
-        conviction_pct = (args.conviction_pct[conviction] * global_multiplier
+        base_pct = args.conviction_pct[conviction]
+        sizing_basis = "conviction"
+        stop_distance = c.get("stop_distance_pct")
+        if args.risk_per_trade_pct is not None and (group == "new" or stop_distance is not None):
+            try:
+                stop_distance = float(stop_distance)
+            except (TypeError, ValueError):
+                stop_distance = None
+            if stop_distance is None or not 0 < stop_distance < 1:
+                results.append({"symbol": symbol, "group": group, "conviction": conviction, "passed": False,
+                                "blocking": ["missing_v2_input"], "retry_eligible": False,
+                                "reason": "stop_distance_pct missing or not between 0 and 1 -- needed for "
+                                          "the risk-per-trade cap; this candidate is skipped"})
+                continue
+            risk_pct = args.risk_per_trade_pct / stop_distance
+            if risk_pct < base_pct:
+                base_pct, sizing_basis = risk_pct, "risk"
+        conviction_pct = (base_pct * global_multiplier
                           * min(1.0, cand_multiplier))
+        sector = c.get("sector")
 
         if args.entries_halted:
             halted_result = {
@@ -128,24 +174,37 @@ def main():
                     f"cash_remaining after trade (${candidate_cash_after:.2f}) would fall below "
                     f"min_cash_buffer_pct (${min_cash_buffer:.2f}) of total_value"
                 )
+            if args.max_positions_per_sector is not None:
+                if not sector:
+                    codes.append("missing_v2_input")
+                    reasons.append("sector missing -- needed for the per-sector cap")
+                elif sector_counts.get(sector, 0) + 1 > args.max_positions_per_sector:
+                    codes.append("sector_cap")
+                    reasons.append(f"{sector} already holds {sector_counts.get(sector, 0)} tactical positions "
+                                   f"(max_positions_per_sector {args.max_positions_per_sector})")
 
             if reasons:
                 results.append({
                     "symbol": symbol, "group": group, "conviction": conviction,
                     "passed": False, "reason": "; ".join(reasons),
                     "blocking": codes,
-                    # slots and cash can free up later the same day (a sell fills)
-                    "retry_eligible": set(codes) <= {"concurrency_cap", "cash_buffer"},
+                    # slots, cash, and sector room can free up later the same day (a sell fills)
+                    "retry_eligible": set(codes) <= {"concurrency_cap", "cash_buffer", "sector_cap"},
                     "dollar_amount": dollar_amount,
+                    "sizing_basis": sizing_basis,
                 })
                 continue
 
             cash_remaining = candidate_cash_after
             concurrent_positions_after = candidate_concurrent_after
+            if sector:
+                sector_counts[sector] = sector_counts.get(sector, 0) + 1
             results.append({
                 "symbol": symbol, "group": group, "conviction": conviction,
                 "passed": True,
                 "dollar_amount": dollar_amount,
+                "size_pct": round(conviction_pct, 6),
+                "sizing_basis": sizing_basis,
                 "concurrent_positions_after": concurrent_positions_after,
                 "cash_remaining_after": round(cash_remaining, 2),
                 "cash_buffer_after_pct": round(cash_remaining / args.total_value, 6),
@@ -225,6 +284,7 @@ def main():
         "results": results,
         "cash_remaining_final": round(cash_remaining, 2),
         "concurrent_positions_after_final": concurrent_positions_after,
+        "sector_counts_after": sector_counts,
     }))
 
 

@@ -7,6 +7,11 @@ Scheduled Claude sessions screen stocks, write out their reasoning, and
 enforce mechanical, auditable risk rules on every trade. The safety
 mechanism is the rules, not the model's judgment.
 
+The strategy (v2) buys short pullbacks in strong stocks and
+post-earnings drift instead of chasing stocks that are already trending
+up, lets stops work on the daily close, sizes each trade by the risk to
+its stop, and lets winners run behind a trailing stop.
+
 It includes a dry-run paper portfolio, an SPY/QQQ benchmark, hourly
 intraday checks (stops, news exits, buy retries), an on-demand manual
 check, a weekly review, stop-level price alerts, bilingual daily
@@ -143,7 +148,7 @@ full trading day's closing data feeds the thesis, and a fresh opening
 price is used for the actual order, rather than trading on a stale
 overnight price. During the day, a midday check (the "hourly check") and a closing check
 re-run the stops, sell on thesis-breaking news, and retry buys that were
-skipped only for price, slots, or cash; a manual check can run the full
+skipped only for price, slots, cash, or the sector cap; a manual check can run the full
 Trade cycle at any time.
 
 ### A trading day
@@ -205,9 +210,12 @@ session's data; spec `RESEARCH_TASK.md`). Places no orders.
    market-cap band, minimum price, leveraged/inverse ETFs, price below its
    200-day moving average. Held positions are always kept.
 2. **Signal gate.** A candidate is researched only if it meets **any one**
-   of `signal_thresholds`: a 60-day price move, a volume spike, or a price
-   near its 52-week high or low. The rest are logged `no_signal` with no
-   thesis. Held positions are always researched.
+   of `signal_thresholds` (a 60-day price move, a volume spike, or a price
+   near its 52-week high or low) or has a v2 entry setup (a dip or an
+   earnings gap, below). The rest are logged `no_signal` with no
+   thesis. Held positions are always researched. For an earnings gap the
+   thesis records whether EPS beat and whether the company raised its
+   guidance.
 3. **Thesis.** The model runs a news search and writes a line to
    `pending_proposals.jsonl`: `direction` (`long` / `avoid` /
    `exit_existing`), `conviction` (`high` / `medium` / `low`, against a
@@ -219,13 +227,16 @@ around 8:50am Pacific weekdays, when you can approve orders in the
 Robinhood app; spec `TRADE_TASK.md`). Decides which `long`
 candidates are bought:
 
-- **Market regime and core sleeve.** SPY and QQQ technicals decide
-  whether the market is risk-off (SPY below its 50-day average) and
-  which ETF, if any, holds the ~25% core sleeve (QQQ, else SPY, else
-  cash, whichever is above both its 50- and 200-day averages).
+- **Market regime and core sleeve** (`core_regime.py`). The ~25% core
+  sleeve holds QQQ (or SPY when QQQ is below its own 200-day average). It
+  goes to cash only after SPY closes below its 200-day average two days
+  in a row, and comes back after two closes above it, so one close
+  across the line never flips it. Risk-off (SPY below its 50-day
+  average) still governs the defensive slot.
 - **Re-verify.** Re-check each proposal against the opening price. Run all
-  sells (stop-loss, take-profit, conviction trim, pre-earnings trim,
-  `exit_existing`) before any buy, merged into one order per stock. Every
+  sells (stop-loss, engine exits and time stops, take-profit, conviction
+  trim, pre-earnings trim, `exit_existing`) before any buy, merged into
+  one order per stock. Every
   run also searches for news since the Research run's thesis (overnight earnings,
   downgrades, legal or regulatory news): a buy is dropped if the news
   breaks its thesis, and bad news on a held position is flagged at the
@@ -233,12 +244,28 @@ candidates are bought:
   checks can, after a sharp move). Stops
   (`stop_loss.py`) are set from the conviction at entry: a multiple of
   ATR, placed under support when that fits, ratcheting up only, and
-  never more than a 20% loss.
-- **Classify.** Each candidate is a trend buy, a pullback buy (Mag 7, TSM,
-  ASML, or SMH at least 10% off the high and technically stabilizing, bought in
-  two half-size tranches, even below the 200-day average), an ETF
-  (rated by its own `etf_conviction` rubric), or a defensive name (at
-  most one, only when risk-off).
+  never more than a 20% loss; or, with `stop_loss.mode` set to
+  `"fixed_pct"`, a flat `stop_loss.fixed_pct` (for example 15%) below
+  cost. They trigger on the **daily close**, so a dip during the day
+  doesn't sell; intraday, only a drop of 12%+ from yesterday's close
+  that is also below the stop, or the hard floor, sells. Once a position is up at least 1 ATR, a
+  chandelier trailing stop follows 3 ATR under its highest close.
+- **Classify — the entry engines** (`setups.py`). A new position needs a
+  setup:
+  - **dip** — the stock is above its 200-day average and has closed down
+    3 days in a row or has RSI(2) at or below 10. It is sold on the first
+    close above its 5-day average, after 10 trading days, or at its stop.
+  - **earnings** — post-earnings drift: an EPS beat with raised guidance,
+    a gap of 3%+ on heavy volume that held into the close. Bought within
+    two sessions, stopped just under the gap day's low, held up to 20
+    trading days.
+  - **pullback** — Mag 7, TSM, ASML, or SMH at least 10% off the high and
+    technically stabilizing, bought in two half-size tranches, even below
+    the 200-day average.
+  - **defensive** — at most one, only when risk-off.
+  Plain trend buys are off, and held positions get top-ups only as a
+  pullback second tranche. ETFs are rated by their own `etf_conviction`
+  rubric.
 - **Loss limits.** Losing 5% in a day or 10% in a week halves new sizes
   for 3 trading days; only a severe loss (8% / 15%) pauses buying.
 - **Buy gate** (`entry_gate.py`). The buy is skipped this cycle if the
@@ -250,9 +277,11 @@ candidates are bought:
   then larger percent below the 52-week high.
 - **Size** (`position_sizing.py`). In ranked order, each candidate is
   bought at its conviction-tier size (high 12%, medium 8%, low 5% of the
-  account; new positions under $10 are skipped) until `max_concurrent_positions`
-  (8 by default) tactical
-  positions or the `min_cash_buffer_pct` floor is reached. While SPY is
+  account), made smaller when needed so that its loss at the initial stop
+  is at most 1% of the account (`risk_per_trade_pct`); new positions
+  under $10 are skipped. Buying stops at `max_concurrent_positions`
+  (8 by default) tactical positions, at most 4 in one sector
+  (`max_positions_per_sector`), or at the `min_cash_buffer_pct` floor. While SPY is
   below its 200-day average, new tactical entries and top-ups are halved
   (`regime_sizing`; defensive names excepted).
 - **Earnings on held positions** (`earnings_risk.py`). Held positions
@@ -261,28 +290,31 @@ candidates are bought:
   before the report, once per report.
 - **Sector concentration** (`concentration.py`). Every run reports each
   sector's share of the account, counting the core sleeve's ETF toward
-  its sector, and flags any sector above 50%. Information only, never a
-  cap.
+  its sector, and flags any sector above 50%. The report is information
+  only; the position cap per sector is in sizing above.
 
 Every decision is logged to `trade_log.jsonl`. Some cycles buy nothing.
 
 **Example.** `EXAMPLE` is on your watchlist at $40, a $15B-cap trading
-above its 200-day average, so it passes the universe filters. It is up 16%
-over 60 days, so it meets the price-move threshold and gets a news search;
-the model finds a confirmed earnings beat, no risk flags, and rates it
-`high` conviction, `long`. Next morning it opens at $40.60, within all
-buy-gate limits, and is the only `high`-conviction candidate, so it ranks
-first. `high` is 12% of the account: on $500 that is a $60 buy, placed if
-the cash buffer holds. Had it opened at $42 — 5% above the thesis price,
-over the `entry_price_gap.max_pct` limit — the buy would be skipped that
-cycle.
+above its 200-day average, so it passes the universe filters. It has
+closed lower three days in a row, so the dip setup fires and it gets a
+news search; the model finds a confirmed earnings beat last month, no
+risk flags, and rates it `high` conviction, `long`. Next morning it opens
+at $40.20, within all buy-gate limits, and ranks first. `high` is 12% of
+the account, and its stop is 8% below the price, so a 12% position
+would lose about 1% of the account at the stop: on $500 that is a $60
+buy, placed if the cash buffer holds. Two days later it closes above its
+5-day average and the dip engine sells it. Had it opened at $42 — 5%
+above the thesis price, over the `entry_price_gap.max_pct` limit — the
+buy would be skipped that cycle.
 
 **Weekly review** (Sunday ~6pm Pacific, before the Sunday Research
 run; spec `REVIEW_TASK.md`).
 Report-only. Turns the week's fills into closed trades and reports win
 rate, average return, and P&L by conviction tier, buy type, and exit
 reason, how often each rule fired, how order approvals went (including
-any declined risk sells), and the result against SPY and QQQ. It never
+any declined risk sells), the **veto shadow** (what the orders you
+declined would have made or lost), and the result against SPY and QQQ. It never
 trades or changes a rule; it gives you evidence before you tune one.
 Its one automatic output is the **performance guard**
 (`performance_guard.json`): a buy type or conviction tier that is
@@ -295,16 +327,19 @@ size, never raise it.
 10:50am, plus a closing check around 12:50pm Pacific; spec
 `HOURLY_TASK.md`). Each check:
 - re-runs the stop-loss and take-profit rules on held positions, reusing
-  the morning's ATR and support;
+  the morning's ATR and support (the hourly check sells only on an
+  emergency drop or the hard floor; the closing check treats the price a
+  few minutes before the close as the day's close, and also runs the dip
+  and earnings engine exits);
 - searches the news when a position falls 4% from yesterday's close or
   moves 2.5% since the last check, and sells the whole position
   (`news_exit`) if company news breaks its thesis;
 - warns when SPY falls 2% or QQQ 2.5% (information only);
-- retries today's buys that were skipped only for price, slots, or cash,
-  or that you declined, through every buy gate again, at most one filled
-  buy per stock per day;
-- resubmits a stop-loss, take-profit, or news-exit sell you declined
-  while its rule still fires.
+- retries today's buys that were skipped only for price, slots, cash, or
+  the sector cap, or that you declined, through every buy gate again, at
+  most one filled buy per stock per day;
+- resubmits a stop-loss, take-profit, news-exit, or engine-exit sell you
+  declined while its rule still fires.
 They never trade the core sleeve, run trims, or buy anything the morning
 run didn't already approve on its thesis. The closing check adds the
 day's summary. Every order still waits for your approval in the app.
@@ -366,13 +401,19 @@ scheduled time.)
   - `pnl_pct.py` — daily/weekly loss-limit % against `net_deposits_usd`
     (computed fresh each cycle, see TRADE_TASK.md), and the
     entries-halted decision.
-  - `technicals.py` — moving averages, RSI, MACD, ATR, support and
-    resistance, relative strength, and the stabilization and
-    falling-knife flags, from daily bars.
+  - `technicals.py` — moving averages, RSI(2) and RSI(14), down-day
+    streaks, gaps, MACD, ATR, support and resistance, relative strength,
+    and the stabilization and falling-knife flags, from daily bars.
   - `stop_loss.py` — the conviction-tiered ATR stop (support-aware,
-    ratchet-only, 20% hard floor), including the trailing-high reference
-    once a take-profit tier has fired, the core-sleeve exit, and the
-    trigger decision.
+    ratchet-only, 20% hard floor) or the flat-percent stop, the earnings
+    engine's stop, the
+    chandelier trailing stop, the trailing-high reference once a
+    take-profit tier has fired, the core-sleeve exit, and the close-based
+    trigger decision (with the intraday emergency).
+  - `setups.py` — the v2 entry engines (dip, earnings) and their exits
+    (close above the 5-day average, time stop).
+  - `core_regime.py` — when the core sleeve is on, and QQQ or SPY, with
+    two-close confirmation.
   - `take_profit.py` — tiered partial-exit firing, cascading quantity
     correctly when a single cycle's gain jumps past more than one
     not-yet-fired tier at once.
@@ -386,8 +427,10 @@ scheduled time.)
   - `concentration.py` — each sector's share of the account and the
     over-threshold flag (report-only).
   - `performance_review.py` — the weekly review's closed-trade stats,
-    rule-fire counts, and approval outcomes (report-only).
-  - `position_sizing.py` — the sizing above, plus concurrency and
+    rule-fire counts, approval outcomes, and the veto shadow
+    (report-only).
+  - `position_sizing.py` — the sizing above (conviction tier capped by
+    the 1% risk to the stop), plus concurrency, sector-cap, and
     cash-buffer checks, compounding running totals down the ranked list.
   - `intraday_triggers.py` — which held positions moved enough for a
     news check, and whether the market is selling off (hourly checks).
@@ -525,16 +568,23 @@ explaining it. The main settings and their defaults:
 | `position_sizing.max_concurrent_positions` | `8` | tactical positions (the core sleeve doesn't count) |
 | `position_sizing.min_cash_buffer_pct` | 5% | cash always left uninvested |
 | `position_sizing.min_new_position_usd` | $10 | smaller new positions are skipped |
+| `position_sizing.risk_per_trade_pct` | 1% | a new position is made smaller if its loss at the initial stop would exceed this share of the account |
+| `position_sizing.max_positions_per_sector` | `4` | tactical positions in one sector (the core sleeve doesn't count) |
+| `entry_engines.dip` | 3 down days or RSI(2) ≤ 10, above the 200-day | buy the dip; exit on a close above the 5-day average or after 10 trading days |
+| `entry_engines.earnings` | EPS beat, raised guidance, 3%+ gap on 1.5× volume | post-earnings drift; stop under the gap day's low, exit after 20 trading days |
 | `stop_loss.tiers` / `hard_floor_pct` | 3.0 / 2.5 / 2.0 × ATR, 20% | conviction-tiered stops and the maximum loss on any position |
+| `stop_loss.mode` / `fixed_pct` | `"conviction_tiered_atr"` / 15% | tiered ATR stops, or a flat percent below cost with `"fixed_pct"` |
+| `stop_loss.trigger_basis` / `intraday_emergency_drop_pct` | daily close / 12% | stops act on the close; intraday only when the price is below the stop and down 12% from yesterday's close |
+| `stop_loss.trailing` | after +1 ATR (+15% in `fixed_pct` mode), 3 × ATR | chandelier trailing stop under the highest close |
 | `take_profit.tiers` | +15% / +30% / +50% | each sells 25% of the position once |
 | `loss_limits` | 5% day / 10% week | halve new sizes for 3 days; 8% / 15% pauses buying |
-| `core_sleeve` | 25% in QQQ, else SPY | trend-following index position |
+| `core_sleeve` | 25% in QQQ, else SPY; off after 2 closes of SPY below its 200-day | trend-following index position |
 | `pullback_mode.whitelist` | Mag 7, TSM, ASML, SMH | names that may be bought on a 10%+ pullback below the 200-day average |
 | `defensive.max_positions` | `1` | defensive names, only while SPY is below its 50-day average |
 | `entry_price_gap` / `entry_extension` / `earnings_blackout` | 3% / 10% / 5 days | buy-gate limits |
 | `regime_sizing` | ×0.5 below SPY's 200-day | new tactical entries and top-ups while the market is in a downtrend |
 | `earnings_hold` | 5 days, sell 50% of low | pre-earnings flag window and trim for held positions |
-| `concentration_report.flag_sector_pct` | 50% | sector share that gets flagged in the report (never a cap) |
+| `concentration_report.flag_sector_pct` | 50% | sector share that gets flagged in the report (the report itself is never a cap) |
 | `performance_guard` | 10 closed positions / 60 days, <35% wins and <0% avg → ×0.5 | tighten-only sizing for a buy type or tier the weekly review finds failing |
 | `intraday_checks` | news check at −4% from close or ±2.5% since the last check; market alert at SPY −2% / QQQ −2.5% | hourly and closing checks: news exits, resubmitting declined sells, buy retries (one filled buy per stock per day) |
 | `cadence.news_search_budget_per_cycle` | `30` | news searches per Research run |
@@ -637,7 +687,7 @@ flowchart TD
 - **One decision per proposal.** A proposal is decided once, by
   whichever run reaches it first. Later runs skip it, so a manual check
   and the next Trade run never buy the same thing twice. The one
-  exception: a buy skipped only for price, slots, or cash, or one you
+  exception: a buy skipped only for price, slots, cash, or the sector cap, or one you
   declined, may be retried later the same day by the hourly and closing
   checks (or a manual check), at most one filled buy per stock per day.
 - **Dry-run cycles come only from the Trade run.** Only a scheduled Trade run

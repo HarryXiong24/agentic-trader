@@ -5,8 +5,8 @@ _Part of agentic-trader. MIT License._
 Has no schedule. The account owner starts it by hand whenever they want a check
 right now, for example after a big intraday move or before deciding
 whether to step in. It runs the full Trade cycle immediately: sells
-first (stop-loss, take-profit, conviction trim, pre-earnings trim,
-`exit_existing`), then
+first (stop-loss, engine exits and time stops, take-profit, conviction
+trim, pre-earnings trim, `exit_existing`), then
 the buy gate, ranking, and sizing on the current
 `pending_proposals.jsonl`.
 
@@ -50,23 +50,29 @@ at the next open.
      open. These lines never count as a sell that went out, so a
      take-profit tier or pre-earnings trim still fires on the next run.
      Stop-level alerts may still be updated.
-4. **Idempotency is unchanged.** A proposal already decided by an
+4. **Stops and engine exits use completed sessions**, as in the Trade
+   run: the stop compares the latest completed daily close (yesterday's
+   during market hours), and only an intraday emergency or the hard floor
+   sells on today's price. A manual run never treats the current price
+   as today's close; only the scheduled closing check does.
+5. **Idempotency is unchanged.** A proposal already decided by an
    earlier run (matching `proposal_date`) is skipped, so a manual run
    never buys the same proposal twice, and the next scheduled Trade run
    skips anything a manual run already decided. As in `TRADE_TASK.md`
    Step 0, a decision made today that is retryable (rejected only for
-   price, slots, or cash, or a buy that was declined or expired) is not
+   price, slots, cash, or the sector cap, or a buy that was declined or
+   expired) is not
    counted as decided, so a manual run can retry it too.
-5. **Append, never overwrite, the recap.** Append a
+6. **Append, never overwrite, the recap.** Append a
    `Manual Check / 手动检查 (<HH:mm> CT)` section to
    `trade_log_recent.md`, and the same section to
    `reports/<today's date>.md`, in the bilingual format. Earlier
    sections from the Trade run or the hourly and closing checks stay
    intact.
-6. **Commit message:** `Manual check <date> <timestamp>`. Everything
+7. **Commit message:** `Manual check <date> <timestamp>`. Everything
    else about saving (files added, privacy grep, push and retry rules,
    no force-push) follows `TRADE_TASK.md`'s "Saving to the repo".
-7. **Report, email, and notification on every manual run**, whether
+8. **Report, email, and notification on every manual run**, whether
    the market is open or closed, per `TRADE_TASK.md`'s "Report,
    email, and notification (every run)".
 

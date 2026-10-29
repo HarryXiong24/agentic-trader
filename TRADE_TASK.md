@@ -21,35 +21,59 @@ Do not add, remove, or loosen any gate condition on your own judgment.
 
 All numbers live in `risk_rules.json`.
 
-1. **Core sleeve.** About 25% of the account sits in QQQ (or SPY, or
-   cash) depending on which is in an uptrend (Step 3, Step 7).
-2. **Up to `position_sizing.max_concurrent_positions` tactical positions** (8 by default), sized by conviction (12% / 8% / 5%); new positions under $10 are skipped. While SPY is below its 200-day average, new tactical entries and top-ups are halved (`regime_sizing`).
-3. **Quality pullbacks.** Mag 7 names, TSM, ASML, and SMH may be bought below their
+This is strategy v2: it buys short pullbacks in strong stocks and
+post-earnings drift instead of chasing stocks that are already trending
+up, lets stops work on the daily close, and lets winners run.
+
+1. **Core sleeve.** About 25% of the account sits in QQQ (or SPY). It
+   leaves the market only after SPY closes below its 200-day average two
+   days in a row and comes back after two closes above it
+   (`scripts/core_regime.py`, Step 3, Step 7).
+2. **Entry engines** (`entry_engines`, `scripts/setups.py`, Step 4).
+   New tactical positions come from the **dip** engine (a stock above its
+   200-day average after 3 down closes in a row or RSI(2) at or below 10;
+   sold on the first close above its 5-day average, or after 10 trading
+   days), the **earnings** engine (an EPS beat with raised guidance and a
+   gap of 3%+ on heavy volume that held into the close; bought within two
+   sessions, stop just under the gap day's low, held up to 20 trading
+   days), the pullback whitelist, or the defensive slot. Plain trend
+   entries are off, and held positions get top-ups only as a pullback
+   second tranche.
+3. **Up to `position_sizing.max_concurrent_positions` tactical positions** (8 by default), at most `position_sizing.max_positions_per_sector` (4) in one sector, each sized by conviction (12% / 8% / 5%) but never so large that the loss at its initial stop exceeds `position_sizing.risk_per_trade_pct` (1%) of the account; new positions under $10 are skipped. While SPY is below its 200-day average, new tactical entries and top-ups are halved (`regime_sizing`).
+4. **Quality pullbacks.** Mag 7 names, TSM, ASML, and SMH may be bought below their
    200-day average once they are well off the high and technically
    stabilizing, in two tranches (Step 4).
-4. **Technicals are computed**, never eyeballed: RSI, MACD, moving
+5. **Technicals are computed**, never eyeballed: RSI, MACD, moving
    averages, ATR, and support come from `scripts/technicals.py`.
-5. **Stops** are conviction-tiered, ATR-based, and support-aware, set
-   from the conviction at entry, only ever ratcheting up, with a 20%
-   hard floor (Step 5).
-6. **Soft loss limits.** A normal breach halves new sizes for a few
+6. **Stops** are either a flat `stop_loss.fixed_pct` below cost (when
+   `stop_loss.mode` is `"fixed_pct"`) or conviction-tiered, ATR-based,
+   and support-aware, set from the conviction at entry (the default
+   `"conviction_tiered_atr"`); an earnings position starts from its
+   engine stop either way. They trigger on the **daily close**: during
+   the day a position sells only when the price is below the stop and
+   down at least 12% from yesterday's close, or at the 20% hard floor.
+   Once a position is up at least 1 ATR, a chandelier trailing stop
+   follows 3 ATR under its highest close. Stops only ever ratchet up
+   (Step 5).
+7. **Soft loss limits.** A normal breach halves new sizes for a few
    days; only a severe breach pauses buying (Step 7).
-7. **ETFs are judged as ETFs** (`etf_conviction`), and **defensive
+8. **ETFs are judged as ETFs** (`etf_conviction`), and **defensive
    names are capped** at one position, bought only when risk-off.
-8. **Earnings on held positions** are flagged when a report is near,
+9. **Earnings on held positions** are flagged when a report is near,
    and low-conviction positions are half sold on the last session
    before the report (`earnings_hold`, Step 5).
-9. **Sector concentration** is reported every run and flagged above
-   50% of the account. It is information only, never a cap
-   (`concentration_report`, Step 9).
-10. **Performance guard.** A buy type or conviction tier that the weekly
+10. **Sector concentration** is reported every run and flagged above
+   50% of the account (`concentration_report`, Step 9); the position cap
+   per sector is in item 3.
+11. **Performance guard.** A buy type or conviction tier that the weekly
    review finds clearly failing (10+ closed positions in 60 days, win rate
    under 35%, average return below zero) gets half size on new entries and top-ups
    until it recovers. It can only reduce size (`performance_guard`, Step 7).
-11. **Intraday checks.** Hourly checks and a closing check (`HOURLY_TASK.md`)
+12. **Intraday checks.** Hourly checks and a closing check (`HOURLY_TASK.md`)
    re-run the stops and take-profit, sell on thesis-breaking news after a
    sharp move, warn on a market sell-off, and retry today's buys that were
-   skipped only for price, slots, or cash, or declined (`intraday_checks`).
+   skipped only for price, slots, cash, or the sector cap, or declined
+   (`intraday_checks`).
 
 ## Step 0 — Load state (do this first, every run)
 
@@ -93,7 +117,7 @@ and prints only the relevant lines as JSON: `decided` and `cycles` here,
      e.g. a run that may only recommend, or one halted because trade
      approval is off), so a later manual run can still execute it.
      A decision made **today** that is retryable also doesn't count: a
-     `risk_check` rejected only for price, slots, or cash
+     `risk_check` rejected only for price, slots, cash, or the sector cap
      (`"retry_eligible": true`), or a buy the account owner declined or
      that expired. The hourly and closing checks retry those
      (`HOURLY_TASK.md`), and so may a manual run the same day.
@@ -149,13 +173,14 @@ real account as written.
 `"would_execute": true`, apply it to the ledger in the same step:
 - new entry: `python3 scripts/paper_portfolio.py buy --symbol <SYM>
   --dollar-amount <dollar_amount> --price <quote_ask> --conviction
-  <effective conviction> --mode <trend|pullback|etf|defensive|core>
+  <effective conviction> --mode <dip|earnings|pullback|etf|defensive|core>
+  [--initial-stop <initial_stop> --gap-date <gap_date>, earnings only]
   --date <today>` (core buys omit `--conviction`). The ledger keeps
   this entry conviction and mode for the life of the position.
 - top-up: the same, but omit `--conviction` and `--mode`.
 - sell: `python3 scripts/paper_portfolio.py sell --symbol <SYM>
   --quantity <quantity> --price <quote_bid> --reason <stop_loss|
-  news_exit|take_profit|conviction_trim|earnings_trim|exit_existing|
+  news_exit|engine_exit|time_stop|take_profit|conviction_trim|earnings_trim|exit_existing|
   core_exit|core_rotation|core_rebalance> --date <today>`
 Add the script's `realized_pnl_usd` (sells) and `cash_after` to that
 `order` log line. Paper sells skip `review_equity_order` (the real
@@ -172,7 +197,11 @@ calendar days back so the 200-day average and 52-week range are
 complete; drop any `interpolated: true` bars), save them oldest first as
 JSON (`[{"date","open","high","low","close","volume"}, ...]`), and run
 `python3 scripts/technicals.py --bars <file> [--benchmark-bars <SPY file>]`.
-Use its output directly (`sma20/50/200`, `above_sma20/50/200`,
+During market hours the last bar may be today's, still in progress:
+drop any bar dated today before saving, so every indicator, setup, and
+"latest close" is from completed sessions (the regime, the setups, and
+the close-based stops depend on this). Use its output directly
+(`sma5/20/50/200`, `above_sma20/50/200`, `rsi2`,
 `atr14`, `support`, `stabilizing`, `stabilization_flags`,
 `falling_knife`, ...); never eyeball an indicator. Fetch SPY's bars once
 per run and reuse them. If the script fails for a symbol, treat that
@@ -181,16 +210,21 @@ falls back to the hard floor (log why).
 
 ## Step 3 — Market regime and core target
 
-Run technicals on SPY and QQQ.
+Run technicals on SPY and QQQ (completed bars only).
 - **Risk-off** = SPY's `above_sma50` is false.
 - **Below-200 regime** = SPY's `above_sma200` is false. While it holds
   and `regime_sizing.enabled` is true, new tactical entries and top-ups
   are sized at `regime_sizing.new_entry_size_multiplier` (Step 7).
-- **Core target** = the first symbol in `core_sleeve.candidates_in_order`
-  whose `above_sma50` and `above_sma200` are both true; if none, there is
-  no core target (the core sleeve holds cash).
+- **Core regime** — let the script decide:
+  `python3 scripts/core_regime.py --spy-bars <SPY file> --qqq-bars <QQQ file> --today <today> --confirm-closes <core_sleeve.regime.confirm_closes> [--held <the core ETF held now, SPY or QQQ>]`.
+  Its `action` is `buy` (no core held, regime on: buy `target_etf`),
+  `exit` (regime turned off: sell the core position, `core_exit`),
+  `rotate` (sell the held ETF, `core_rotation`, and buy `target_etf`),
+  `hold`, or `none`. The **core target** is `target_etf` (null on `exit`
+  or `none`). If the script fails, keep the current core position and buy
+  nothing for the core sleeve this run (log why).
 
-Log `"stage": "regime", "risk_off": <bool>, "spy_below_sma200": <bool>, "core_target": "<symbol or null>"`
+Log `"stage": "regime", "risk_off": <bool>, "spy_below_sma200": <bool>, "core_target": "<symbol or null>", "core_regime": <the script's JSON>`
 with the SPY and QQQ technicals that decided it. The core sleeve itself
 is traded in Step 7, after sells and the loss-limit check.
 
@@ -240,7 +274,9 @@ group) would no longer find it there.
 are never tactical candidates — drop them with
 `"reason": "core sleeve symbol — traded only by the core sleeve"`.
 Run technicals on every other candidate, then give each **new**
-candidate a mode, checked in this order:
+candidate a mode, checked in this order (strategy v2: there is no plain
+trend mode any more while `entry_engines.trend_entries_enabled` is
+false):
 
 - **Pullback**: symbol in `pullback_mode.whitelist`, and either its
   thesis `trend_filter` is `"failed"` or its `pct_below_52wk_high` is at
@@ -249,28 +285,60 @@ candidate a mode, checked in this order:
   knife); otherwise reject with `"reason": "pullback not stabilizing yet: <which stabilization flags are false, or falling knife>"`.
   It carries `size_multiplier` = `pullback_mode.first_tranche_size_multiplier`
   into sizing (the first tranche is half size).
-- **ETF** (`instrument_type: "etf"`, e.g. SMH when it is not a
-  pullback): effective conviction = the thesis `etf_conviction`.
 - **Defensive**: symbol in `defensive.symbols`. Allowed only when Step 3
   says risk-off and fewer than `defensive.max_positions` defensive
   positions are held or already approved this run; otherwise reject
   with the reason (`"not risk-off"` or `"defensive cap reached"`).
-- **Trend**: everything else. Its thesis `trend_filter` must be
-  `"passed"` or `"skipped"`; reject `"failed"` with
-  `"reason": "below trend and not on the pullback whitelist"`.
+- **Earnings** (only if `entry_engines.earnings.enabled`): the thesis
+  carries an `earnings_setup` (`gap_date`, `eps_beat`,
+  `guidance_raised`, from the Research run). Run
+  `python3 scripts/setups.py entry --engine earnings --bars <file> --today <today> --current-price <fresh ask> --gap-date <gap_date> --eps-beat <true|false> --guidance-raised <true|false> --min-gap-pct <entry_engines.earnings.min_gap_pct> --min-rel-volume <entry_engines.earnings.min_rel_volume> --entry-window-trading-days <entry_engines.earnings.entry_window_trading_days> --stop-buffer-pct <entry_engines.earnings.stop_buffer_below_gap_low_pct>`.
+  If `valid`, the mode is `earnings`; its `stop_price` is the position's
+  `initial_stop` and `stop_distance_pct` goes to sizing. If not valid,
+  try the dip engine next.
+- **Dip** (only if `entry_engines.dip.enabled`): run
+  `python3 scripts/setups.py entry --engine dip --bars <file> --today <today> --min-down-days <entry_engines.dip.min_down_days> --max-rsi2 <entry_engines.dip.max_rsi2> --max-single-day-drop-pct <entry_engines.dip.max_single_day_drop_pct>`.
+  If `valid`, the mode is `dip`. ETFs (e.g. SMH when it is not a
+  pullback) can only be dip candidates.
+- **Otherwise** reject with `"reason": "no v2 entry setup: <the dip
+  script's blocking list, and the earnings one if it was checked>"`,
+  `"retry_eligible": false` (a setup comes from completed daily bars, so
+  it cannot appear later today).
 
-Effective conviction is the thesis `conviction` for every mode except
-ETF. Log the mode on every `risk_check` line for the candidate.
+Effective conviction is the thesis `conviction`, or the thesis
+`etf_conviction` for an ETF. Log the mode on every `risk_check` line for
+the candidate.
 
-**Held candidates (top-ups).** A position with ledger `mode: pullback`
+**Stop distance and sector (every new candidate that got a mode).**
+Sizing needs both:
+- `stop_distance_pct`: for `earnings`, the setup's `stop_distance_pct`
+  (recomputed from the fresh ask: `(ask − initial_stop) / ask`); for
+  every other mode, run
+  `python3 scripts/stop_loss.py --entry-price <fresh ask> --current-price <fresh ask> --hard-floor-pct <stop_loss.hard_floor_pct> --entry-conviction <effective conviction> --tiers <stop_loss.tiers> --atr <atr14> [--support <support, if below the price>]`
+  (when `stop_loss.mode` is `"fixed_pct"`, pass `--fixed-pct
+  <stop_loss.fixed_pct> --atr <atr14>` instead of `--entry-conviction`,
+  `--tiers`, and `--support`) and take its `stop_pct_from_reference`.
+- `sector`: `get_equity_fundamentals` `sector`, merged through
+  `concentration_report.sector_groups` (an ETF uses
+  `concentration_report.etf_sectors`, or its own symbol if not listed).
+Log `stop_distance_pct`, `sector`, and for `earnings` also
+`initial_stop` and `gap_date` on every `risk_check` line for the
+candidate (the hourly and closing checks reuse them for retries).
+
+**Held candidates (top-ups).** With `entry_engines.top_ups` set to
+`"pullback_second_tranche_only"`, the only top-up is a pullback second
+tranche; reject every other held candidate with `"position_action":
+"top_up", "reason": "v2: no top-ups outside a pullback second tranche"`.
+A position with ledger `mode: pullback`
 and `tranches: 1` gets its second tranche only if technicals
 `above_sma20` is true, the fresh price is above its average cost, and it
 was opened no more than `pullback_mode.second_tranche.max_trading_days_after_entry`
-trading days ago; it then goes to sizing with no `size_multiplier`, so
-the top-up fills the remaining half. If any condition fails, reject the
-top-up with the failing condition. Core positions are never top-up
-candidates. Every other held candidate follows the normal top-up rules
-in Step 7.
+trading days ago; it then goes to sizing with no `size_multiplier` and
+with `stop_distance_pct` = `(fresh price − the position's current stop)
+/ fresh price`, so the top-up fills the remaining half but the whole
+position still respects the 1% risk cap. If any condition fails, reject
+the top-up with the failing condition. Core positions are never top-up
+candidates.
 
 ## Step 5 — Sell-side risk enforcement
 
@@ -297,10 +365,31 @@ it):
   (it only ever rises), and pass the ledger's `trailing_high` below.
 
 **Tactical positions** (every mode except `core`) — run:
-`python3 scripts/stop_loss.py --entry-price <average cost> --current-price <fresh quote> --hard-floor-pct <stop_loss.hard_floor_pct> --entry-conviction <ledger entry_conviction, "medium" if missing> --tiers <stop_loss.tiers as "high:3.0:0.08:0.18,medium:2.5:0.06:0.15,low:2.0:0.05:0.12"> --atr <technicals atr14> [--support <technicals support, if below the price>] [--trailing-high <ledger trailing_high, only once a take-profit tier has fired>] [--previous-stop <ledger stop_price>]`
+`python3 scripts/stop_loss.py --entry-price <average cost> --current-price <fresh quote> --hard-floor-pct <stop_loss.hard_floor_pct> --entry-conviction <ledger entry_conviction, "medium" if missing> --tiers <stop_loss.tiers as "high:3.0:0.08:0.18,medium:2.5:0.06:0.15,low:2.0:0.05:0.12"> --atr <technicals atr14> [--support <technicals support, if below the price>] [--trailing-high <ledger trailing_high, only once a take-profit tier has fired>] [--previous-stop <ledger stop_price>] [--initial-stop <initial_stop, earnings positions only>] --trigger-basis close --last-close <the latest completed daily close> --previous-close <the same close> --intraday-emergency-pct <stop_loss.intraday_emergency_drop_pct> [--highest-close <the highest completed daily close since entry_date> --trail-atr-mult <stop_loss.trailing.atr_multiplier> --trail-activate-atr <stop_loss.trailing.activate_after_gain_atr>, when stop_loss.trailing.enabled]`
+
+When `stop_loss.mode` is `"fixed_pct"`, pass `--fixed-pct
+<stop_loss.fixed_pct>` instead of `--entry-conviction`, `--tiers`, and
+`--support` (keep `--atr`, which the trailing stop uses), and
+`--trail-activate-pct <stop_loss.trailing.activate_after_gain_pct_fixed_mode>`
+instead of `--trail-activate-atr`, so the trailing stop only takes over
+once the position is up that much. Earnings positions use
+`--initial-stop` in either mode. The window for
+`--highest-close` starts at the position's `entry_date` from
+`log_query.py positions` (the date it was actually opened; in dry run,
+the ledger's `opened_date`), never at the holding-period boundary,
+which can be weeks earlier. A `stop_reset` line in the log (written
+only when the account owner asks to change the stops of open
+positions) ends the ratchet: `previous_stop` comes back empty for that
+symbol and the stop is computed fresh from the current rules.
+
+The trigger is the daily close (`stop_loss.trigger_basis`): this run
+sells when yesterday's close was at or below the stop, or on an
+intraday emergency or the hard floor (the script's `trigger_reason`).
+`initial_stop` comes from `log_query.py positions` (the opening buy's
+order line) or the paper ledger.
 
 **Core positions** (`mode: core`) — run:
-`python3 scripts/stop_loss.py --mode core --entry-price <average cost> --current-price <fresh quote> --hard-floor-pct <stop_loss.hard_floor_pct> [--below-sma200 when technicals above_sma200 is false]`.
+`python3 scripts/stop_loss.py --mode core --entry-price <average cost> --current-price <fresh quote> --hard-floor-pct <stop_loss.hard_floor_pct> [--below-sma200 when Step 3's core_regime action is exit]`.
 A triggered core stop sells the whole core position with
 `--reason core_exit`.
 
@@ -326,10 +415,23 @@ review, never blocked by a loss-limit halt, executed in Step 6's
 sell-execution pass. A good thesis never cancels a stop-loss — see
 `risk_rules.json`'s note. Log `"stage": "stop_loss"` with the script's
 `entry_conviction`, `stop_price`, `stop_basis`, `reference_price`,
-`drawdown_from_reference`, `triggered`, and `action`, plus `atr14` and
-`support_level` (the technicals `support`, logged even when it is above
-the price and therefore not passed to the script). The hourly and
-closing checks reuse these two values instead of fetching bars again.
+`drawdown_from_reference`, `triggered`, `trigger_reason`, `trailing_active`,
+and `action`, plus `atr14`, `support_level` (the technicals `support`,
+logged even when it is above the price and therefore not passed to the
+script), `highest_close`, `last_completed_close`, and `initial_stop`
+(earnings positions). The hourly and closing checks reuse these values
+instead of fetching bars again.
+
+### Engine exits (dip and earnings positions)
+
+For every position whose `entry_mode` is `dip` or `earnings`, run
+`python3 scripts/setups.py exit --engine <dip|earnings> --bars <file> --today <today> --entry-date <entry_date from log_query.py positions; the ledger's opened_date in dry run> --max-hold-trading-days <entry_engines.<engine>.max_hold_trading_days> [--exit-sma <entry_engines.dip.exit_close_above_sma>, dip only]`.
+If `exit` is true, sell the whole position in Step 6 with reason
+`engine_exit` (a dip position closed above its 5-day average) or
+`time_stop` (held the maximum number of sessions). Log `"stage":
+"engine_exit"` with the script's JSON. A declined engine exit is
+submitted again whenever the rule still fires on a later run. Positions
+opened before strategy v2 (`trend` and the rest) have no engine exit.
 
 ### Stop-level price alerts (after the stop-loss check)
 
@@ -505,8 +607,9 @@ directly. Skip any position a stop-loss already fully sells this cycle.
 
 ## Step 6 — Sell-side execution
 
-**Execute sells now — every stop-loss trigger, fired take-profit tier,
-conviction-trim trigger, pre-earnings trim, and Step 4's `exit_existing` candidates:** run
+**Execute sells now — every stop-loss trigger, engine exit, time stop,
+fired take-profit tier, conviction-trim trigger, pre-earnings trim, and
+Step 4's `exit_existing` candidates:** run
 this procedure for each, before touching anything buy-side below — a
 sell must actually clear before its freed cash/slot can be counted
 toward a same-cycle buy, and before today's realized P&L (loss-limit
@@ -514,7 +617,8 @@ check, further down) can see it.
 
 **One sell order per symbol per run.** If more than one sell fires for
 the same symbol this cycle, submit a single sell for that symbol: a
-stop-loss or `exit_existing` sells the whole position; otherwise sum the
+stop-loss, engine exit, time stop, or `exit_existing` sells the whole
+position; otherwise sum the
 quantities of the fired take-profit tiers, the conviction trim, and the
 pre-earnings trim, capped at the quantity available to sell (live:
 `shares_available_for_sells` from `get_equity_positions`; dry run: the
@@ -523,15 +627,18 @@ conviction trim on what still exceeds the target after them.
 Log one `order` line with `"reasons": [every reason that fired]` and
 `"reason"` set to the first that applies in this order: `stop_loss`,
 `news_exit` (used only by the hourly and closing checks),
-`exit_existing`, `take_profit`, `conviction_trim`, `earnings_trim`
+`engine_exit`, `time_stop`, `exit_existing`, `take_profit`,
+`conviction_trim`, `earnings_trim`
 (carry `report_date` when `earnings_trim` is among them). The per-check
 lines (`stop_loss`, `take_profit`, `conviction_trim`, `earnings_check`)
 are still logged once each. A sell that is skipped (already pending,
 blocked by review, market closed, trade approval off) does not count as
 done for any of its reasons, so take-profit tiers and pre-earnings trims
-fire again on a later run. A stop-loss or take-profit sell the account
-owner declines is submitted again whenever its rule still fires on a
-later run, including the hourly and closing checks; a declined
+fire again on a later run. A stop-loss, take-profit, engine-exit, or
+time-stop sell the account owner declines is submitted again whenever
+its rule still fires on a later run (stops and take-profit also in the
+hourly and closing checks; engine exits and time stops in the closing
+check and the next Trade run); a declined
 conviction trim, pre-earnings trim, or `exit_existing` sell is not.
 
 1. **Always** call `review_equity_order` first — a preview, never places
@@ -663,13 +770,14 @@ fixed for the rest of this cycle unless one gets approved below.
 **If `open_slots <= 0`**: no **new** candidate can be approved this
 cycle. Skip the news search and buy gate below for every
 **new**-group candidate — log instead:
-`"stage": "risk_check", "passed": false, "retry_eligible": true, "proposal_date": "<candidate's date from pending_proposals.jsonl>", "reason": "no open slots this cycle (X of Y max already held/approved) — skipped without staleness re-check"`.
+`"stage": "risk_check", "passed": false, "retry_eligible": true, "proposal_date": "<candidate's date from pending_proposals.jsonl>", "mode": "<Step 4 mode>", "stop_distance_pct": <Step 4>, "sector": "<Step 4>", "reason": "no open slots this cycle (X of Y max already held/approved) — skipped without staleness re-check"`.
 **held** group is unaffected.
 
 **If `open_slots > 0`**: **new** group continues normally (slots may
 still run out mid-ranking via ordinary per-candidate concurrency check).
 
-**No same-cycle sell-then-buy**: if a symbol's stop-loss fired, any
+**No same-cycle sell-then-buy**: if a symbol's stop-loss fired, an
+engine exit or time stop fired, any
 take-profit tier fired, a conviction-trim fired, or a pre-earnings trim
 fired earlier this cycle (Step 5), it is not eligible for a top-up this same cycle, regardless
 of thesis or conviction — drop it from the **held** group before
@@ -744,7 +852,7 @@ held position, note "news check failed" in the report.
 ### Buy gate (every day)
 
 **Buys only — new entries and top-ups; never applies to
-stop_loss/news_exit/take_profit/conviction_trim/earnings_trim/exit_existing sells, which are
+stop_loss/news_exit/engine_exit/time_stop/take_profit/conviction_trim/earnings_trim/exit_existing sells, which are
 never gated on price or tax considerations.** One script call answers
 every independent, per-symbol condition that can block this candidate;
 `position_sizing.py`'s slot/cash allocation across the whole candidate
@@ -803,7 +911,7 @@ Run:
 <thesis current_price> --entry-price-gap-max-pct
 <entry_price_gap.max_pct> --daily-closes <comma-separated closes>
 --max-extension-pct <entry_extension.max_extension_pct, or 100 for a
-pullback-mode candidate or second tranche>
+pullback-mode or earnings-mode candidate or a second tranche>
 [--wash-sale-enabled --wash-sale-lookback-days <N> --loss-sale-dates
 <dates>] --today <date> [--last-sell-reason <reason> --last-sell-price
 <price> --last-sell-date <date> --last-sell-was-gain <true|false>
@@ -900,9 +1008,13 @@ with `soft_breach`, `severe`, the size multiplier in effect,
 open-position cost basis, all-time realized P&L).
 
 **Core sleeve (after the loss-limit check, before ranking).** Using
-Step 3's core target and the current snapshot:
-1. If a core position is held in a symbol other than the core target
-   (or there is no target), sell it all (`--reason core_rotation`).
+Step 3's `core_regime` result and the current snapshot:
+1. On `exit`, sell the core position (`--reason core_exit`) unless
+   Step 5's core stop already did. On `rotate`, sell the held ETF
+   (`--reason core_rotation`); the target is then `target_etf`. On
+   `hold` and `buy` the target is `target_etf`; on `none` there is no
+   target. Never sell a core position only because the regime is
+   unconfirmed: the script already keeps the current state then.
 2. If there is a target and no severe breach, compare the core
    position's value with `core_sleeve.target_pct_of_account` × total
    value. Only if the difference is more than
@@ -933,7 +1045,8 @@ for every candidate except defensive names, and the performance guard
 multiplier below; omit it when the product is 1), `risk_flags` (omit the key entirely if the thesis
 disclosed none — an omitted key and an empty array mean different
 things to the ranking script below), `pct_below_52wk_high` (omit if
-not available), `group` (`"new"` or `"held"`), and — for **held**
+not available), `group` (`"new"` or `"held"`), for **new** candidates
+`stop_distance_pct` and `sector` (Step 4), and — for **held**
 candidates only — `current_position_value` (quantity from the fresh
 re-pulled `get_equity_positions` above × fresh price from
 `get_equity_quotes`). Also use the re-pulled `total_value` and `cash`
@@ -944,7 +1057,8 @@ and `concurrent_positions_start` (open tactical positions, as in the
 **Performance guard.** If `performance_guard.enabled` is true and
 `performance_guard.json` has an `as_of` date no more than
 `performance_guard.max_age_days` days old, a candidate whose Step 4 mode
-(`trend`, `pullback`, `etf`, or `defensive`; for a held top-up, the
+(`dip`, `earnings`, `pullback`, `etf`, `defensive`, or for an older
+position `trend`; for a held top-up, the
 `entry_mode` of the position's opening buy, from its `order` line or
 the paper ledger) matches a guarded `entry_mode`, or whose effective conviction matches a guarded
 `entry_conviction`, gets its `size_multiplier` multiplied by that
@@ -956,7 +1070,7 @@ any active guard in the recap.
 
 Rank the candidates, then size them — pipe the candidate list (a JSON
 array) through both scripts in sequence (directly chainable):
-`python3 scripts/rank_candidates.py | python3 scripts/position_sizing.py --total-value <total_value> --cash-start <cash> --concurrent-positions-start <concurrent_positions_start> [--entries-halted] --max-position-pct <position_sizing.max_position_pct_of_account> --max-concurrent-positions <position_sizing.max_concurrent_positions> --min-cash-buffer-pct <position_sizing.min_cash_buffer_pct> --min-top-up-usd <position_sizing.min_top_up_usd> --min-top-up-pct-of-target <position_sizing.min_top_up_pct_of_target> --conviction-pct "<position_sizing.conviction_pct, e.g. high:0.12,medium:0.08,low:0.05>" --min-new-position-usd <position_sizing.min_new_position_usd> [--size-multiplier <from the loss-limit check>]`
+`python3 scripts/rank_candidates.py | python3 scripts/position_sizing.py --total-value <total_value> --cash-start <cash> --concurrent-positions-start <concurrent_positions_start> [--entries-halted] --max-position-pct <position_sizing.max_position_pct_of_account> --max-concurrent-positions <position_sizing.max_concurrent_positions> --min-cash-buffer-pct <position_sizing.min_cash_buffer_pct> --min-top-up-usd <position_sizing.min_top_up_usd> --min-top-up-pct-of-target <position_sizing.min_top_up_pct_of_target> --conviction-pct "<position_sizing.conviction_pct, e.g. high:0.12,medium:0.08,low:0.05>" --min-new-position-usd <position_sizing.min_new_position_usd> --risk-per-trade-pct <position_sizing.risk_per_trade_pct> --max-positions-per-sector <position_sizing.max_positions_per_sector> --sector-counts '<JSON: open tactical positions per merged sector, from the re-pulled positions; core never counts>' [--size-multiplier <from the loss-limit check>]`
 `rank_candidates.py` sorts by conviction tier first (`high` before
 `medium` before `low`), then `risk_flags` count ascending within a
 tier (a missing `risk_flags` field sorts last, treated as worst
@@ -979,7 +1093,9 @@ Use the final script's JSON output directly — rather than recomputing
 any of it:
 - its `results` array: one entry per candidate, in ranked order, each
   carrying `passed`, and depending on outcome: `reason`,
-  `position_action: "top_up"`, `dollar_amount`,
+  `position_action: "top_up"`, `dollar_amount`, `size_pct`,
+  `sizing_basis` (`conviction`, or `risk` when the 1% risk cap made it
+  smaller),
   `current_position_value`, `target_size`, `headroom`,
   `concurrent_positions_after`, `cash_remaining_after`,
   `cash_buffer_after_pct`
@@ -999,8 +1115,8 @@ each — rather than falling back to manual computation.
 
 For each candidate, log `"stage": "risk_check"` with that candidate's
 `results` entry fields verbatim, including `blocking` and
-`retry_eligible` on a rejection (true when only slots or cash blocked
-it, so a later check can retry it).
+`retry_eligible` on a rejection (true when only slots, cash, or the
+sector cap blocked it, so a later check can retry it).
 
 Every `risk_check` entry must include `proposal_date` (copied from the
 candidate's `"date"` in `pending_proposals.jsonl` — Step 0's idempotency
@@ -1018,9 +1134,11 @@ gate conditions, the same fill-confirmation and logging shape) — with
 one difference: the pre-trade estimate logged alongside each order is
 `quote_ask`/`quantity` here (a buy fills near the ask), not the
 `quote_bid` used for sells. Every buy `order` line also carries the
-entry `"conviction"` (effective) and `"entry_mode"` (trend, pullback,
-etf, defensive, or core), so the stop tier can be recovered in `live`
-mode.
+entry `"conviction"` (effective) and `"entry_mode"` (dip, earnings,
+pullback, etf, defensive, or core), so the stop tier can be recovered in
+`live` mode; an earnings buy also carries `"initial_stop"` and
+`"gap_date"`, and every new-entry buy its `"stop_distance_pct"`,
+`"sector"`, and `"sizing_basis"`.
 
 Never change `execution.mode` yourself. Every `order` entry must carry
 `proposal_date` (same as Step 7's `risk_check` entries) — Step 0's
@@ -1039,12 +1157,16 @@ evaluations), and `order` stages, matching the shape already in
 
 **Required fields** (the weekly review reads these; examples of each are
 in `trade_log_template.jsonl`):
-- `stop_loss`: the script's fields plus `atr14` and `support_level`.
+- `stop_loss`: the script's fields plus `atr14`, `support_level`,
+  `highest_close`, `last_completed_close`, and `initial_stop` (earnings).
+- `engine_exit`: the `setups.py exit` JSON for every dip and earnings
+  position.
 - `risk_check` rejections: `retry_eligible` whenever the script that
   rejected the candidate returned it, and on the capacity short-circuit.
 - Buy `order`: `symbol`, `"action": "buy"`, `mode`, `conviction`,
-  `entry_mode` (`trend`, `pullback`, `etf`, `defensive`, or `core`),
-  `dollar_amount`, `placed` (live) or `would_execute` (dry run),
+  `entry_mode` (`dip`, `earnings`, `pullback`, `etf`, `defensive`, or
+  `core`; `trend` only on positions opened before v2), `dollar_amount`,
+  `initial_stop` and `gap_date` (earnings), `placed` (live) or `would_execute` (dry run),
   `approval_id` and `order_id` when known, `order_state`, `proposal_date`,
   and `"retry": true` on a buy retried by an hourly or closing check.
 - Sell `order`: `symbol`, `"action": "sell"`, `mode`, `quantity`,
@@ -1125,8 +1247,10 @@ from the rules). Pipe the array into:
 Append its output to `trade_log.jsonl` as `"stage": "concentration"`, and
 add a short **Concentration** section to `trade_log_recent.md` listing
 each sector's share of the account. If a sector is flagged, say so near
-the top of the recap, the email, and the notification. This is
-information only: it never blocks a buy or forces a sell.
+the top of the recap, the email, and the notification. The report is
+information only: it never blocks a buy or forces a sell. (The separate
+per-sector position cap, `position_sizing.max_positions_per_sector`,
+works in Step 7's sizing.)
 
 ### Bilingual records
 

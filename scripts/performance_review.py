@@ -31,6 +31,17 @@ with at least --guard-min-trades closed positions whose win rate is below
 --guard-max-avg-return gets --guard-size-multiplier on new entries and top-ups.
 Manual, unknown, and core trades are never guarded. The result is written
 to the --guard-out file for the Trade run to read.
+
+With --prices (a JSON object of current prices, {"PLTR": 182.4, ...}),
+it also reports the veto shadow: what the orders the account owner
+declined in the app would have done. A declined buy is marked to today's
+price as if it had filled at its decision price (one per symbol per
+day). Declined sells are grouped into chains (repeated declines of the
+same symbol until a sell of it fills); a chain's effect is
+(end price - first decline price) x the quantity first offered, where the
+end price is the fill price of the sell that finally went through, or
+today's price if none has. A positive veto effect means declining helped.
+Marked to today's price, so recent declines can still swing either way.
 """
 import argparse
 import json
@@ -309,6 +320,10 @@ def rule_fires(log, since):
                 once("earnings_trim_placed", (sym, day))
             if "news_exit" in reasons:
                 once("news_exit_submitted", (sym, day))
+            if "engine_exit" in reasons:
+                once("engine_exit_submitted", (sym, day))
+            if "time_stop" in reasons:
+                once("time_stop_submitted", (sym, day))
         elif s == "order" and l.get("action") == "buy" and l.get("retry") and went_out(l):
             c["buy_retries_submitted"] += 1
         elif s == "news_exit":
@@ -377,11 +392,90 @@ def compute_guard(positions, today, lookback_days, min_trades, max_win_rate, max
             "checked": checked}
 
 
+def decision_price(l):
+    for k in ("limit_price", "quote_ask" if l.get("action") == "buy" else "quote_bid", "reference_price",
+              "current_price", "price"):
+        try:
+            v = float(l.get(k))
+            if v > 0:
+                return v
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def veto_shadow(log, since, prices, fills):
+    outcome = {k: v[0] for k, v in approval_outcomes(log).items()}
+    declined = [l for l in log
+                if l.get("stage") == "order" and l.get("mode") == "live" and l.get("placed")
+                and l.get("approval_id") and outcome.get(l["approval_id"]) == "declined"]
+    sell_fills = defaultdict(list)
+    for f in fills or []:
+        if f.get("side") == "sell" and f.get("date") and f.get("price") is not None:
+            sell_fills[f["symbol"]].append((f["date"], float(f["price"])))
+    rows, seen, chains = [], set(), {}
+    for l in declined:
+        sym, day = l.get("symbol"), l.get("date")
+        px = decision_price(l)
+        now = prices.get(sym)
+        if l.get("action") == "buy":
+            if (sym, day) in seen:
+                continue
+            seen.add((sym, day))
+            amt = l.get("dollar_amount")
+            if px is None or now is None or not amt:
+                rows.append({"side": "buy", "symbol": sym, "date": day, "skipped": "no price or amount"})
+                continue
+            pnl = float(amt) * (float(now) / px - 1)
+            rows.append({"side": "buy", "symbol": sym, "date": day, "decision_price": px, "dollar_amount": amt,
+                         "end_price": now, "end_basis": "today", "hypothetical_pnl_usd": round(pnl, 2),
+                         "return_pct": round(float(now) / px - 1, 4)})
+        else:
+            ch = chains.get(sym)
+            closed = ch is not None and any(ch["date"] <= f[0] < (day or "") for f in sell_fills.get(sym, []))
+            if ch is not None and not closed:
+                ch["declines"] += 1
+                continue
+            # a sell that filled after the previous chain started closes it; start a new one
+            chains[sym] = {"side": "sell", "symbol": sym, "date": day, "reason": sell_reason(l),
+                           "decision_price": px, "quantity": l.get("quantity"), "declines": 1}
+            rows.append(chains[sym])
+    for ch in [r for r in rows if r["side"] == "sell"]:
+        sym = ch["symbol"]
+        later = sorted(x for x in sell_fills.get(sym, []) if x[0] >= ch["date"])
+        if later:
+            end, basis = later[0][1], f"sold {later[0][0]}"
+        else:
+            end, basis = prices.get(sym), "today"
+        try:
+            qty = float(ch["quantity"])
+        except (TypeError, ValueError):
+            qty = None
+        if end is None or ch["decision_price"] is None or qty is None:
+            ch["skipped"] = "no price or quantity"
+            continue
+        ch.update({"end_price": end, "end_basis": basis,
+                   "veto_effect_usd": round((float(end) - ch["decision_price"]) * qty, 2),
+                   "return_pct": round(float(end) / ch["decision_price"] - 1, 4)})
+
+    def totals(rs):
+        b = [r for r in rs if r["side"] == "buy" and "hypothetical_pnl_usd" in r]
+        sl = [r for r in rs if r["side"] == "sell" and "veto_effect_usd" in r]
+        return {"declined_buys": len(b),
+                "declined_buys_hypothetical_pnl_usd": round(sum(r["hypothetical_pnl_usd"] for r in b), 2),
+                "declined_sell_chains": len(sl),
+                "declined_sells_veto_effect_usd": round(sum(r["veto_effect_usd"] for r in sl), 2),
+                "note": "buys: what declining cost (negative = declining helped); sells: positive = declining helped"}
+    return {"this_week": totals([r for r in rows if r.get("date") and d(r["date"]) >= since]),
+            "all_time": totals(rows), "rows": rows}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--trade-log", default="trade_log.jsonl")
     p.add_argument("--fills", help="JSON file of filled equity orders (live mode)")
     p.add_argument("--positions", help="JSON file of open positions with current prices")
+    p.add_argument("--prices", help='JSON file of current prices for the veto shadow, {"SYM": price}')
     p.add_argument("--since", required=True, help="start of this review's week, YYYY-MM-DD")
     p.add_argument("--today", help="today's date, YYYY-MM-DD (default: system date)")
     p.add_argument("--guard-out", help="write the performance guard to this file (e.g. performance_guard.json)")
@@ -399,6 +493,7 @@ def main():
         log = load_log(args.trade_log)
         fills = json.load(open(args.fills)) if args.fills else fills_from_dry_run(log)
         positions = json.load(open(args.positions)) if args.positions else []
+        prices = json.load(open(args.prices)) if args.prices else None
     except (OSError, json.JSONDecodeError, ValueError) as e:
         print(json.dumps({"error": f"could not read inputs: {e}"}), file=sys.stderr)
         sys.exit(1)
@@ -449,6 +544,7 @@ def main():
         "approvals_all_time": approvals(log, None),
         "latest_benchmark": bench,
         "performance_guard": guard,
+        "veto_shadow": veto_shadow(log, since, prices, fills if args.fills else None) if prices else None,
     }))
 
 

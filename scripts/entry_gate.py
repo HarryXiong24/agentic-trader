@@ -39,7 +39,8 @@ def main():
 
     p.add_argument("--last-sell-reason",
                     choices=["stop_loss", "take_profit", "conviction_trim", "earnings_trim", "exit_existing",
-                             "news_exit", "core_exit", "core_rotation", "core_rebalance"])
+                             "news_exit", "core_exit", "core_rotation", "core_rebalance",
+                             "engine_exit", "time_stop"])
     p.add_argument("--last-sell-price", type=float)
     p.add_argument("--last-sell-date", type=parse_date)
     p.add_argument("--last-sell-was-gain", choices=["true", "false"],

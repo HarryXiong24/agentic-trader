@@ -11,10 +11,14 @@ Trade run and the close:
 | Closing check | ~12:50pm | `"closing"` | `Closing Check / 收盘检查` |
 
 The run prompt says which one this is. Both do the same steps; the
-closing check also writes the day's summary (Step 9).
+closing check also runs the engine exits (Step 3b) and writes the day's
+summary (Step 9).
 
 Each check:
-- re-checks held positions against the stop-loss and take-profit rules,
+- re-checks held positions against the stop-loss and take-profit rules
+  (stops trigger on the daily close, so during the day only an emergency
+  drop or the hard floor sells; the closing check treats the price a few
+  minutes before the close as today's close),
 - looks for news when a held position moves sharply, and sells the
   position if that news breaks its thesis,
 - warns when the market is selling off,
@@ -112,6 +116,9 @@ declined (and resubmit it) or a buy was declined (and retry it).
   symbol: `entry_conviction` and `entry_mode` (from the holding period's
   opening buy), `previous_stop`, `trailing_high`, today's `atr14` and
   `support_level` from an earlier run, `last_check_price`,
+  `highest_close` (highest completed close since entry, from the
+  morning run), `initial_stop` (earnings positions),
+  `entry_date` (the date the position was opened),
   `fired_take_profit_tiers`, today's sells and buys with their status,
   and `news_exit_today`. A core-sleeve position is one whose
   `entry_mode` (or paper ledger `mode`) is `core`, or any SPY or QQQ
@@ -133,12 +140,30 @@ ATR, support, clamp, ratchet, or floor by hand.
   `support`, and `above_sma200`. Pass `--support` only if it is below
   the current price.
 - **Tactical positions** (every mode except core):
-  `python3 scripts/stop_loss.py --entry-price <average cost> --current-price <price> --hard-floor-pct <stop_loss.hard_floor_pct> --entry-conviction <entry_conviction, "medium" if missing> --tiers <stop_loss.tiers as "high:3.0:0.08:0.18,medium:2.5:0.06:0.15,low:2.0:0.05:0.12"> --atr <atr14> [--support <support_level>] [--trailing-high <trailing_high, only if fired_take_profit_tiers is not empty>] [--previous-stop <previous_stop>]`
+  `python3 scripts/stop_loss.py --entry-price <average cost> --current-price <price> --hard-floor-pct <stop_loss.hard_floor_pct> --entry-conviction <entry_conviction, "medium" if missing> --tiers <stop_loss.tiers as "high:3.0:0.08:0.18,medium:2.5:0.06:0.15,low:2.0:0.05:0.12"> --atr <atr14> [--support <support_level>] [--trailing-high <trailing_high, only if fired_take_profit_tiers is not empty>] [--previous-stop <previous_stop>] [--initial-stop <initial_stop, earnings positions>] --trigger-basis close --last-close <see below> --previous-close <the quote's previous_close> --intraday-emergency-pct <stop_loss.intraday_emergency_drop_pct> [--highest-close <see below> --trail-atr-mult <stop_loss.trailing.atr_multiplier> --trail-activate-atr <stop_loss.trailing.activate_after_gain_atr>, when stop_loss.trailing.enabled]`
+  - `--last-close`: in the hourly check, the quote's `previous_close`
+    (yesterday's official close); in the closing check, the current
+    price, which stands in for today's close.
+  - `--highest-close`: `highest_close` from Step 2 (a completed close
+    logged by the morning run; never the current price, which is not a
+    close yet). Leave the trailing flags out if it is missing.
+  - When `stop_loss.mode` is `"fixed_pct"`, pass `--fixed-pct
+    <stop_loss.fixed_pct>` instead of `--entry-conviction`, `--tiers`,
+    and `--support` (keep `--atr`), and `--trail-activate-pct
+    <stop_loss.trailing.activate_after_gain_pct_fixed_mode>` instead of
+    `--trail-activate-atr`. Earnings positions use `--initial-stop` in
+    either mode.
+  - So in the hourly check a dip during the day sells only on the
+    script's `intraday_emergency` or `hard_floor`; a `close_below_stop`
+    there means yesterday's close was already below the stop (the
+    morning sell was declined or never went out), and it is submitted
+    again.
 - **Core positions:**
-  `python3 scripts/stop_loss.py --mode core --entry-price <average cost> --current-price <price> --hard-floor-pct <stop_loss.hard_floor_pct> [--below-sma200 when above_sma200 is false]`.
-  For `above_sma200`, use today's `regime` line
-  (`log_query.py query --stage regime --since <today> --last 1`, SPY or
-  QQQ technicals) when it covers the symbol, or run technicals.
+  `python3 scripts/stop_loss.py --mode core --entry-price <average cost> --current-price <price> --hard-floor-pct <stop_loss.hard_floor_pct> [--below-sma200 when today's regime line's core_regime action is exit]`.
+  Read it from today's `regime` line
+  (`log_query.py query --stage regime --since <today> --last 1`). If
+  there is none, don't pass `--below-sma200` (the hard floor still
+  applies).
 - In dry run, record the stop with `python3 scripts/paper_portfolio.py
   set-meta --symbol <SYM> --stop-price <stop_price>`.
 - **If the script fails**, keep `previous_stop` (or the hard floor,
@@ -150,10 +175,27 @@ Log one line per position: `{"stage": "stop_loss", "symbol", "mode",
 "entry_conviction", "average_cost", "current_price", "quantity",
 "atr14", "support_level", "stop_price", "stop_basis",
 "reference_price", "drawdown_from_reference", "trailing_high",
-"previous_stop", "triggered", "action", "run"}`. `support_level` is the
+"highest_close", "initial_stop", "trigger_basis", "last_close",
+"trailing_active", "previous_stop", "triggered", "trigger_reason",
+"action", "run"}`. `support_level` is the
 technicals support even when it is above the price (it is then not
 passed to the script). `triggered: true` means a full-position sell in
 Step 6. A good thesis never cancels a stop.
+
+## Step 3b — Engine exits (closing check only)
+
+The hourly check skips this. In the closing check, for every position
+whose `entry_mode` is `dip` or `earnings` and that no stop-loss sells
+this run: pull about 60 calendar days of daily bars
+(`get_equity_historicals`, interval=day, drop `interpolated` bars and
+any bar dated today), save them as in Step 3, and run
+`python3 scripts/setups.py exit --engine <dip|earnings> --bars <file> --today <today> --entry-date <entry_date from Step 2; the ledger's opened_date in dry run> --max-hold-trading-days <entry_engines.<engine>.max_hold_trading_days> [--exit-sma <entry_engines.dip.exit_close_above_sma>, dip only] --provisional-close <current price>`.
+If `exit` is true, sell the whole position in Step 6 with its `reason`
+(`engine_exit`: a dip position is closing above its 5-day average;
+`time_stop`: held the maximum number of sessions). Log `{"stage":
+"engine_exit", <the script's JSON>, "run"}`. A declined engine exit is
+submitted again by the next run whose check still fires. Positions
+opened before strategy v2 have no engine exit.
 
 ## Step 4 — Take-profit check
 
@@ -223,28 +265,36 @@ don't search again: go straight to the news-exit sell below. Otherwise:
 **News-exit sell.** If the verdict is `thesis_broken` (now or earlier
 today) and `intraday_checks.news_exit_enabled` is true, sell the whole
 position in Step 6 with reason `news_exit`, unless a full-position sell
-for the symbol (`stop_loss` or `news_exit`) is already pending or filled
-today; a partial take-profit sale earlier today does not stop it. Like every order, it waits for the
+for the symbol (`stop_loss`, `news_exit`, `engine_exit`, or
+`time_stop`) is already pending or filled today; a partial take-profit sale earlier today does not stop it. Like every order, it waits for the
 account owner's approval. The Research run that evening reviews the
 position again from scratch.
 
 ## Step 6 — Sell execution
 
-**One sell order per symbol per run.** A stop-loss or news exit sells
-the whole position. Otherwise sum the fired take-profit tiers' quantities.
+**One sell order per symbol per run.** A stop-loss, news exit, engine
+exit, or time stop sells the whole position. Otherwise sum the fired
+take-profit tiers' quantities.
 Cap at the quantity available to sell (live:
 `shares_available_for_sells`; dry run: the ledger quantity). Log one
 `order` line with `"reasons": [every reason that fired]` and `"reason"`
 set to the first that applies in this order: `stop_loss`, `news_exit`,
-`take_profit`.
+`engine_exit`, `time_stop`, `take_profit`.
 
-**Declined sells come back.** Stops and take-profit are recomputed every
-check, and a `thesis_broken` verdict lasts the day, so a sell the account
+**Declined sells come back.** Stops, take-profit, and (in the closing
+check) engine exits are recomputed every check, and a `thesis_broken`
+verdict lasts the day, so a sell the account
 owner declined is submitted again at the next check while its rule still
 fires (`intraday_checks.resubmit_declined_sells`). If that setting is
 false, skip a symbol whose sell for the same reason was declined earlier
 today (Step 2's `sells_today`), logging `"reason": "declined earlier
 today"`.
+
+**Closing check sells.** A market sell approved after the 3:00pm
+Central close fills at the next open, at whatever price that is. In the
+closing check, say at the top of the report, the email, and the
+notification that every sell it submits should be approved before the
+close.
 
 For each sell:
 1. **Pending check.** If the symbol already has a pending sell
@@ -322,8 +372,8 @@ Skip if `intraday_checks.buy_retry.enabled` is false or
 <intraday_checks.buy_retry.max_filled_buys_per_symbol_per_day>`. Its
 `eligible` list holds today's candidates from the current proposals
 that were last skipped only for price (`entry_price_gap`,
-`entry_extension`, or the ask moving before placement), slots, or cash,
-or whose buy was declined or expired. Never listed: SPY, QQQ, or any
+`entry_extension`, or the ask moving before placement), slots, cash, or
+the sector cap, or whose buy was declined or expired. Never listed: SPY, QQQ, or any
 core-sleeve order; a symbol already bought today up to the limit; one
 with a buy still pending; one with any sell pending or filled today;
 and one whose thesis news broke today. If the list is empty, skip to
@@ -338,6 +388,18 @@ price no gate has checked.
 **Group, recomputed now.** Ignore the retry output's `morning_group`. A
 candidate held right now (Step 2's positions) is a `held` top-up; one
 not held is `new`, even if the morning saw it the other way.
+
+**Strategy v2 modes.** Drop a candidate whose `mode` is `trend` (a v1
+proposal) with `"reason": "v2: trend entries are off"`. A `held`
+candidate gets a top-up only as a pullback second tranche (below); drop
+any other held candidate with `"reason": "v2: no top-ups outside a
+pullback second tranche"`. A `new` candidate keeps its morning `mode`,
+`stop_distance_pct`, and `sector` (from the retry output). An
+`earnings` candidate also needs the fresh ask above its `initial_stop`
+(drop it otherwise, `"reason": "price at or below the earnings stop"`),
+and its `stop_distance_pct` is recomputed as `(ask − initial_stop) /
+ask`. A `dip` setup comes from completed daily bars and stays valid all
+day.
 
 **Same-run guard.** Drop any candidate that had a sell submitted or
 fired in this run (log `"reason": "sell fired this check — not eligible
@@ -364,7 +426,7 @@ For each remaining candidate, run every buy gate again, at this moment:
    last `entry_extension.lookback_trading_days` trading days
    (`get_equity_historicals`, interval=day, ~30 calendar days, drop
    `interpolated` bars); then:
-   `python3 scripts/entry_gate.py --fresh-ask <ask> --thesis-price <thesis_price> --entry-price-gap-max-pct <entry_price_gap.max_pct> --daily-closes <closes> --max-extension-pct <entry_extension.max_extension_pct, or 100 for a pullback-mode candidate or a held pullback position> --today <today> [wash-sale, re-entry-lock, and earnings-blackout inputs]`
+   `python3 scripts/entry_gate.py --fresh-ask <ask> --thesis-price <thesis_price> --entry-price-gap-max-pct <entry_price_gap.max_pct> --daily-closes <closes> --max-extension-pct <entry_extension.max_extension_pct, or 100 for a pullback-mode or earnings-mode candidate or a held pullback position> --today <today> [wash-sale, re-entry-lock, and earnings-blackout inputs]`
    - Wash sale, only if `wash_sale_avoidance.enabled`: `--wash-sale-enabled
      --wash-sale-lookback-days <N> --loss-sale-dates <dates>` from
      `get_pnl_trade_history` for this symbol in the account.
@@ -407,11 +469,14 @@ For each remaining candidate, run every buy gate again, at this moment:
    position's `entry_mode`, or its conviction is guarded; ignore values
    above 1). Omit it when the product is 1.
 6. **Rank and size**, exactly as the morning run does:
-   `python3 scripts/rank_candidates.py | python3 scripts/position_sizing.py --total-value <total_value> --cash-start <cash minus pending buy approvals (log_query.py pending)> --concurrent-positions-start <open tactical positions, plus new-symbol buys still pending approval or fill (log_query.py pending); core never counts> [--entries-halted] --max-position-pct <position_sizing.max_position_pct_of_account> --max-concurrent-positions <position_sizing.max_concurrent_positions> --min-cash-buffer-pct <position_sizing.min_cash_buffer_pct> --min-top-up-usd <position_sizing.min_top_up_usd> --min-top-up-pct-of-target <position_sizing.min_top_up_pct_of_target> --conviction-pct "<position_sizing.conviction_pct>" --min-new-position-usd <position_sizing.min_new_position_usd> [--size-multiplier <soft breach>]`
+   `python3 scripts/rank_candidates.py | python3 scripts/position_sizing.py --total-value <total_value> --cash-start <cash minus pending buy approvals (log_query.py pending)> --concurrent-positions-start <open tactical positions, plus new-symbol buys still pending approval or fill (log_query.py pending); core never counts> [--entries-halted] --max-position-pct <position_sizing.max_position_pct_of_account> --max-concurrent-positions <position_sizing.max_concurrent_positions> --min-cash-buffer-pct <position_sizing.min_cash_buffer_pct> --min-top-up-usd <position_sizing.min_top_up_usd> --min-top-up-pct-of-target <position_sizing.min_top_up_pct_of_target> --conviction-pct "<position_sizing.conviction_pct>" --min-new-position-usd <position_sizing.min_new_position_usd> --risk-per-trade-pct <position_sizing.risk_per_trade_pct> --max-positions-per-sector <position_sizing.max_positions_per_sector> --sector-counts '<JSON: open tactical positions per merged sector (concentration_report.sector_groups; get_equity_fundamentals sector), plus new-symbol buys still pending; core never counts>' [--size-multiplier <soft breach>]`
    with each candidate as `{"symbol", "conviction", "group",
    "size_multiplier", "risk_flags", "pct_below_52wk_high",
+   "stop_distance_pct" and "sector" (new only),
    "current_position_value" (held only)}` (omit `risk_flags` if the
-   retry output has none), and `group` as recomputed above.
+   retry output has none), and `group` as recomputed above. A `new`
+   candidate with no `stop_distance_pct` or `sector` in the retry output
+   is dropped with `"reason": "no v2 sizing inputs from the morning run"`.
 7. **Execute** each approved buy in ranked order. Live: first check
    `get_trade_approvals` and `get_equity_orders` (states `queued`,
    `confirmed`, `unconfirmed`, `partially_filled`) for an open buy of the
@@ -421,18 +486,21 @@ For each remaining candidate, run every buy gate again, at this moment:
    for whole shares). In
    dry run, apply `python3 scripts/paper_portfolio.py buy --symbol <SYM>
    --dollar-amount <amount> --price <ask> --conviction <conviction>
-   --mode <mode> --date <today>` (top-ups omit `--conviction` and
-   `--mode`).
+   --mode <mode> [--initial-stop <initial_stop> --gap-date <gap_date>]
+   --date <today>` (top-ups omit `--conviction` and `--mode`; only
+   earnings buys carry the stop and gap date).
 
 Log a `risk_check` line for every candidate (`"retry": true`,
 `proposal_date`, `group`, `mode`, `conviction`, `risk_flags`,
-`pct_below_52wk_high`, the gate or sizing result, `"passed"`, and
+`pct_below_52wk_high`, `stop_distance_pct`, `sector`, and for earnings
+`initial_stop` and `gap_date`, the gate or sizing result, `"passed"`, and
 `"retry_eligible"` copied from `entry_gate.py` or `position_sizing.py`
 when a candidate is rejected), and for each buy an `order` line:
 `{"stage": "order", "symbol", "action": "buy", "retry": true, "mode",
 "type", "dollar_amount", "quote_ask", "quantity", "conviction",
-"entry_mode", "proposal_date", "placed" or "would_execute",
-"approval_id", "order_id", "order_state", "run"}`. `entry_mode` is the
+"entry_mode", "proposal_date", "stop_distance_pct", "sector",
+"sizing_basis", "initial_stop" and "gap_date" (earnings), "placed" or
+"would_execute", "approval_id", "order_id", "order_state", "run"}`. `entry_mode` is the
 candidate's mode for a new position, or the position's existing
 `entry_mode` for a top-up.
 
@@ -442,7 +510,7 @@ Append one final line (never a `cycle_summary`, which only the Trade run
 writes, so these checks never count as dry-run cycles):
 
 ```json
-{"date": "YYYY-MM-DD", "timestamp": "HH:mm:ss", "stage": "check_summary", "run": "hourly|closing", "mode": "dry_run|live", "market_open": true, "positions_checked": N, "stop_losses_triggered": N, "take_profit_tiers_fired": N, "news_checks": N, "news_exits": N, "market_alert": false, "buy_retries_considered": N, "orders_reviewed": N, "orders_placed": N}
+{"date": "YYYY-MM-DD", "timestamp": "HH:mm:ss", "stage": "check_summary", "run": "hourly|closing", "mode": "dry_run|live", "market_open": true, "positions_checked": N, "stop_losses_triggered": N, "take_profit_tiers_fired": N, "news_checks": N, "news_exits": N, "engine_exits": N, "market_alert": false, "buy_retries_considered": N, "orders_reviewed": N, "orders_placed": N}
 ```
 
 **Closing check only — the day in one place.** Add a `Today / 今日汇总`

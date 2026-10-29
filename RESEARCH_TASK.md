@@ -165,10 +165,26 @@ needed):
    `(high_52_weeks - current_price) / high_52_weeks >= pullback_mode.min_pct_below_52wk_high`.
    Magnitude score for budget priority:
    `actual_pct_below_52wk_high / min_pct_below_52wk_high`.
+5. **Entry setup (strategy v2):** from the same bars (oldest first, saved
+   as in Step 3's technicals), either engine in `risk_rules.json`
+   `entry_engines` would trigger tomorrow:
+   - **dip**: `python3 scripts/setups.py entry --engine dip --bars <file> --today <tomorrow's date> --min-down-days <entry_engines.dip.min_down_days> --max-rsi2 <entry_engines.dip.max_rsi2> --max-single-day-drop-pct <entry_engines.dip.max_single_day_drop_pct>`
+     returns `valid: true`;
+   - **earnings gap**: the company reported earnings within the last
+     `entry_engines.earnings.entry_window_trading_days` sessions
+     (`get_earnings_results`), and on the first session after the report
+     (the gap day: the same day for a report before the open, the next
+     session for one after the close) the stock opened at least
+     `entry_engines.earnings.min_gap_pct` above the prior close on at
+     least `entry_engines.earnings.min_rel_volume` x its 20-day average
+     volume.
+   Magnitude score: 2.0 (setups are what the Trade run can buy, so they
+   go ahead of the other signals when the budget is short).
 
 Record which criteria fired as `"signal_sources"` (a list drawn from
 `"price_move"`, `"volume_spike"`, `"near_52wk_extreme"`, `"pullback"`,
-`"held"`) on both the `screened` line and the thesis line.
+`"dip_setup"`, `"earnings_gap"`, `"held"`) on both the `screened` line
+and the thesis line.
 
 **Log the raw inputs behind every ratio, not just the ratio** (see
 `signal_check` format below) — otherwise it can't be sanity-checked
@@ -331,6 +347,26 @@ model never estimates RSI, moving averages, support, or similar by eye.
 If the script fails, set `"technicals": null` and note why. Technicals
 inform the thesis narrative but do **not** change the company-catalyst
 `conviction` rubric above.
+
+**Entry setups (strategy v2, every `long` candidate not already held).**
+The Trade run only opens positions through an entry engine (or the
+pullback whitelist or the defensive slot), so record what it needs:
+- `"dip_setup"`: the `setups.py entry --engine dip` JSON from Step 2
+  (run it now if Step 2 didn't).
+- `"earnings_setup"`, only when the company reported within the last
+  `entry_engines.earnings.entry_window_trading_days` sessions:
+  `{"report_date", "gap_date", "eps_beat": <true|false>,
+  "guidance_raised": <true|false>, "guidance_source": "<outlet: url>"}`.
+  `eps_beat` is true only when `get_earnings_results` shows reported EPS
+  above the estimate. `guidance_raised` is true only when the company's
+  own release, filing, or call (or wire coverage of it) raised its
+  guidance; an unchanged, reaffirmed, or missing outlook is false, and
+  so is an analyst's estimate change. Then run
+  `python3 scripts/setups.py entry --engine earnings --bars <file> --today <tomorrow's date> --gap-date <gap_date> --eps-beat <..> --guidance-raised <..> --min-gap-pct <entry_engines.earnings.min_gap_pct> --min-rel-volume <entry_engines.earnings.min_rel_volume> --entry-window-trading-days <entry_engines.earnings.entry_window_trading_days> --stop-buffer-pct <entry_engines.earnings.stop_buffer_below_gap_low_pct>`
+  and attach its JSON as `earnings_setup.check`.
+A candidate with neither setup valid can still be proposed (the thesis
+is recorded and it may set up later), but the Trade run will not buy it
+until a setup is valid that morning.
 
 **ETF rubric.** For an ETF (set `"instrument_type": "etf"`; stocks are
 `"stock"`), there is no company-disclosed catalyst, so in addition to
