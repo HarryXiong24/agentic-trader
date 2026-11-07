@@ -2,7 +2,7 @@
 
 _Part of agentic-trader. MIT License._
 
-Runs once a week, Sunday at 6pm Pacific, after the trading week has
+Runs once a week, Sunday at about 8pm Pacific (just before the Sunday Research run), after the trading week has
 closed and before the Sunday Research run, so the guard it writes is in
 place for Monday's Trade run. It measures how the strategy actually performed: win rate,
 average return, and P&L by conviction tier, buy type, and exit reason;
