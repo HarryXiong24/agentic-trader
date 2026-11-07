@@ -3,7 +3,7 @@
 _Part of agentic-trader. MIT License._
 
 Runs once a week, Sunday at about 8pm Pacific, after the trading week has
-closed and just before the Sunday Research run, so the guard it writes is in
+closed and after the Sunday Research run, so the guard it writes is in
 place for Monday's Trade run. It measures how the strategy actually performed: win rate,
 average return, and P&L by conviction tier, buy type, and exit reason;
 how often each rule fired; how order approvals went; and the result

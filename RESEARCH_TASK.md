@@ -3,12 +3,14 @@
 _Part of agentic-trader. MIT License._
 
 Automated subset of this pipeline (see `README.md`), run as a cloud
-routine every Sunday through Thursday evening (Pacific), so the next
+routine every Sunday through Thursday afternoon (about 3pm Pacific, two
+hours after the close), so the next
 morning's Trade run has fresh proposals, and startable by hand on any
 day. There is no Friday run: Sunday's run replaces Thursday's proposals
 before Monday's Trade run anyway, with the weekend's news in it.
-Running in the evening also means the day's after-close earnings
-reports and their after-hours reaction are already out.
+Running after the close also means the day's bars are complete and
+that day's after-close earnings reports and their first after-hours
+reaction are already out.
 
 ## Run days — weekends and holidays included
 

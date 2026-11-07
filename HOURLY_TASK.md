@@ -267,7 +267,7 @@ today) and `intraday_checks.news_exit_enabled` is true, sell the whole
 position in Step 6 with reason `news_exit`, unless a full-position sell
 for the symbol (`stop_loss`, `news_exit`, `engine_exit`, or
 `time_stop`) is already pending or filled today; a partial take-profit sale earlier today does not stop it. Like every order, it waits for the
-account owner's approval. The Research run that evening reviews the
+account owner's approval. The Research run that afternoon reviews the
 position again from scratch.
 
 ## Step 6 — Sell execution

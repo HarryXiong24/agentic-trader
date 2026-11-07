@@ -796,9 +796,9 @@ For every **new** candidate not short-circuited above, and every
 
 ### News since the thesis (every run)
 
-The Research run writes its theses in the evening (Sunday through
-Thursday), and this run buys the next morning, so about 13 hours of
-news — overnight
+The Research run writes its theses in the afternoon after the close
+(Sunday through Thursday), and this run buys the next morning, so about
+17 hours of news — overnight
 earnings, guidance, downgrades, regulatory or legal news, M&A, macro
 shocks — can land in between. Price moves are already caught by the
 buy gate's price-gap check below; this check catches news the price

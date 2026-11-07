@@ -157,7 +157,7 @@ Trade cycle at any time.
 flowchart LR
     B["Trade<br/>~8:30am PT<br/>sells, then buys"] --> HC["Hourly check<br/>~10:04am PT<br/>stops, news exits, buy retries"]
     HC --> C["Closing check<br/>~12:50pm PT<br/>same, plus the day's summary"]
-    C --> A["Research<br/>~8pm PT, Sun–Thu<br/>screen & thesis, no orders"]
+    C --> A["Research<br/>~3pm PT, Sun–Thu<br/>screen & thesis, no orders"]
     A -- "pending_proposals.jsonl" --> B2["Next morning's Trade run"]
     H(["Manual check<br/>any time, started by hand"]) -.-> X["Same as the Trade run, right now<br/>market closed = analysis only"]
     W(["Weekly review<br/>Sunday ~8pm PT"]) -.-> G["performance_guard.json<br/>read by the next Trade run"]
@@ -196,8 +196,9 @@ graph TD
 Only one step is a judgment call — the Research thesis. Every filter,
 ranking, and size is a deterministic script.
 
-**Research — screen and write a thesis** (Steps 1–3, ~8pm Pacific
-Sunday through Thursday, after the day's earnings reports are out; the
+**Research — screen and write a thesis** (Steps 1–3, ~3pm Pacific
+Sunday through Thursday, two hours after the close, once the day's
+after-close earnings reports are out; the
 Sunday run brings the weekend's news into Monday's proposals, so there
 is no Friday run; it also runs by hand on any day, using the last
 session's data; spec `RESEARCH_TASK.md`). Places no orders.
@@ -308,8 +309,8 @@ buy, placed if the cash buffer holds. Two days later it closes above its
 above the thesis price, over the `entry_price_gap.max_pct` limit — the
 buy would be skipped that cycle.
 
-**Weekly review** (Sunday ~8pm Pacific, just before the Sunday Research
-run; spec `REVIEW_TASK.md`).
+**Weekly review** (Sunday ~8pm Pacific, after the Sunday Research run
+and before Monday's Trade run; spec `REVIEW_TASK.md`).
 Report-only. Turns the week's fills into closed trades and reports win
 rate, average return, and P&L by conviction tier, buy type, and exit
 reason, how often each rule fired, how order approvals went (including
@@ -597,7 +598,7 @@ riskiest change you can make; do it deliberately and in dry run first.
 ## Running it
 
 The Trade run, the hourly check, and the closing check fire on
-weekdays; the Research run runs Sunday through Thursday evenings; the
+weekdays; the Research run runs Sunday through Thursday afternoons; the
 weekly review runs on Sunday; and the manual check has no schedule. Each
 is a fresh cloud session that clones this repo, follows its spec, and
 pushes results back to `main` (the repo itself is the persistent state):
@@ -607,7 +608,7 @@ pushes results back to `main` (the repo itself is the persistent state):
 | Trade | ~8:30am | `TRADE_TASK.md` | risk rules, sells, then buys |
 | Hourly check | ~10:04am | `HOURLY_TASK.md` | stops, take-profit, news exits, buy retries |
 | Closing check | ~12:50pm | `HOURLY_TASK.md` | the same, plus the day's summary |
-| Research | ~8pm Sunday–Thursday | `RESEARCH_TASK.md` | screening and theses, no orders |
+| Research | ~3pm Sunday–Thursday | `RESEARCH_TASK.md` | screening and theses, no orders |
 | Weekly review | ~8pm Sunday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
 | Manual check | any time, by hand | `MANUAL_TASK.md` | Trade run right now; analysis only when the market is closed |
 
@@ -783,7 +784,7 @@ same). The Research run still runs, using the last session's data.
 
 **Will so many runs get expensive?** The hourly and closing checks reuse
 the morning's technicals and read the log through `log_query.py`, so
-each one is short. Research, the most expensive run, runs five evenings
+each one is short. Research, the most expensive run, runs five afternoons
 a week.
 
 **Why are times in the logs in Central time?** The specs stamp every
