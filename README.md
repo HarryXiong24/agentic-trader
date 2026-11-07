@@ -155,7 +155,7 @@ Trade cycle at any time.
 
 ```mermaid
 flowchart LR
-    B["Trade<br/>~8:30am PT<br/>sells, then buys"] --> HC["Hourly check<br/>~11:10am PT<br/>stops, news exits, buy retries"]
+    B["Trade<br/>~8:30am PT<br/>sells, then buys"] --> HC["Hourly check<br/>~10:50am PT<br/>stops, news exits, buy retries"]
     HC --> C["Closing check<br/>~12:50pm PT<br/>same, plus the day's summary"]
     C --> A["Research<br/>~8pm PT, Sun–Thu<br/>screen & thesis, no orders"]
     A -- "pending_proposals.jsonl" --> B2["Next morning's Trade run"]
@@ -324,7 +324,7 @@ following week's runs, until it recovers. The guard can only reduce
 size, never raise it.
 
 **Hourly and closing checks** (weekdays: one hourly check around
-11:10am, plus a closing check around 12:50pm Pacific; spec
+10:50am, plus a closing check around 12:50pm Pacific; spec
 `HOURLY_TASK.md`). Each check:
 - re-runs the stop-loss and take-profit rules on held positions, reusing
   the morning's ATR and support (the hourly check sells only on an
@@ -605,7 +605,7 @@ pushes results back to `main` (the repo itself is the persistent state):
 | Run | When (Pacific) | Spec | What it does |
 |---|---|---|---|
 | Trade | ~8:30am | `TRADE_TASK.md` | risk rules, sells, then buys |
-| Hourly check | ~11:10am | `HOURLY_TASK.md` | stops, take-profit, news exits, buy retries |
+| Hourly check | ~10:50am | `HOURLY_TASK.md` | stops, take-profit, news exits, buy retries |
 | Closing check | ~12:50pm | `HOURLY_TASK.md` | the same, plus the day's summary |
 | Research | ~8pm Sunday–Thursday | `RESEARCH_TASK.md` | screening and theses, no orders |
 | Weekly review | ~6pm Sunday | `REVIEW_TASK.md` | performance stats and approvals, report-only |
