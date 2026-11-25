@@ -3,7 +3,7 @@
 _Part of agentic-trader. MIT License._
 
 Automated second half of this pipeline (see `README.md`), run every
-weekday around 9:00am Pacific (about 2.5 hours after the open, once
+weekday around 8:30–9:00am Pacific (about 2–2.5 hours after the open, once
 opening volatility has settled and when the account owner can approve orders in the
 Robinhood app) as a cloud routine.
 Performs Step 0 and **Steps 3–9** below (this spec's own numbering; the
@@ -76,6 +76,18 @@ up, lets stops work on the daily close, and lets winners run.
    (`intraday_checks`).
 
 ## Step 0 — Load state (do this first, every run)
+
+**Market open check (scheduled Trade run; do this before anything
+else).** The regular session is open only on a weekday between 8:30am
+and 3:00pm Central, and only if SPY's latest trade (`get_equity_quotes`)
+is less than 5 minutes old. If it is closed (a US market holiday, or
+after an early close), run no checks and write nothing to
+`trade_log.jsonl` (no `cycle_summary` either, so a closed day never
+counts as a dry-run cycle). Append a short bilingual
+`Market closed / 休市` section to `reports/<today's date>.md`, commit
+it as `Trade run <date>: market closed`, push, and send the email and
+notification. A manual run uses `MANUAL_TASK.md`'s own market open
+check instead, which still analyzes when the market is closed.
 
 **Reading the log.** `trade_log.jsonl` grows every run, so never read it
 whole. `scripts/log_query.py` answers each question this spec asks of it
